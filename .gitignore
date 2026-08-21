@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Local development libs folder
+libs/
+
+# PyInstaller
+*.manifest
+*.spec
+media_tug.spec
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific
+Thumbs.db
+.DS_Store
+.Spotlight-V100
+.Trashes
+
+# App-specific folders (user data, not tracked)
+data/
+cookies/
+logs/
+Media_Tug/
+dist/
+
+# Portable build output
+*.zip
+
+# Cache
+.cache/
+*.cache
+
+# Misc
+*.bak
+*.tmp
+.env
+.env.local
