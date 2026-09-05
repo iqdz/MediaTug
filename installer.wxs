@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Media Tug installer (WiX Toolset v3).
+
+  Design choices, and why:
+  - Per-user install (InstallScope="perUser", InstallPrivileges="limited"),
+    no admin rights needed - matches a personal single-user accessibility
+    tool that shouldn't need a UAC prompt just to install. "limited" also
+    refuses elevated installs, so the app can never end up installed under
+    an administrator's profile where a normal user couldn't write its
+    data\ settings and logs.
+  - Installs to [USERPROFILE]\MediaTug - a sibling of Documents,
+    Downloads, and Music, as requested. There's no built-in MSI "user
+    profile root" folder id, so this is built explicitly below from the
+    USERPROFILE environment variable via <Property>/<SetProperty>.
+  - Minimal wizard: WixUI_Minimal's normal sequence is
+    Welcome -> License -> Progress -> Finish. The <Publish> overrides
+    near the bottom skip the License page, so the real flow a user sees
+    is just Welcome -> Progress -> Finish (two clicks: Next, then
+    Finish). Every dialog is a standard native Windows dialog, so this
+    reads correctly in NVDA/JAWS with no extra work - no custom
+    graphics-heavy UI was used.
+  - The Finish dialog includes a "Launch Media Tug now" checkbox.
+  - Uninstalling removes everything under app\ and the shortcuts, but
+    deliberately does NOT touch cookies\, data\, or logs\ - those hold
+    the user's own settings and cached files, and should survive an
+    uninstall/reinstall the same way a portable copy's data would.
+
+  Build with build_installer.bat (harvests app\ and tools\ automatically
+  via heat.exe, then compiles with candle.exe/light.exe). Requires WiX
+  Toolset v3 installed (sets the WIX environment variable used by that
+  script).
+
+  GUIDs: UpgradeCode and every Component Guid below are real, unique
+  GUIDs already generated for this project (not placeholders) - do not
+  regenerate them. UpgradeCode must stay exactly as-is across future
+  versions so upgrades continue to work; if a brand-new Component is
+  ever added, give it its own fresh, permanent GUID at that time.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <Product Id="*"
+           Name="Media Tug"
+           Language="1033"
+           Version="1.0.0.0"
+           Manufacturer="Harith Alhamdani"
+           UpgradeCode="2B67722B-F29E-4B91-8038-D8F09A1F79A8">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             InstallPrivileges="limited"
+             Description="Media Tug Installer"
+             Comments="Created by Harith Alhamdani for the community." />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Media Tug is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- ================= Install location: [USERPROFILE]\MediaTug ================= -->
+    <!-- USERPROFILE is a real environment variable ("C:\Users\<name>"),
+         the same folder Documents/Downloads/Music live under. WiX's
+         formatted-string syntax for an environment variable is
+         [%Name] - a single percent sign right after the opening
+         bracket, with NO percent before the closing bracket. [%Name%]
+         (percent on both sides, as plain Windows env-var syntax would
+         suggest) is invalid here and fails ICE03 validation at link
+         time with "Invalid format string" - that was fixed below.
+         [%USERPROFILE] reads it directly at install time and
+         INSTALLFOLDER's path is redefined from it - this is the
+         standard WiX pattern for installing outside the usual Program
+         Files/AppData folders. -->
+    <SetProperty Id="INSTALLFOLDER" Value="[%USERPROFILE]\MediaTug" After="AppSearch" Sequence="both" />
+
+    <!-- Permissions model (why installs work for other users with no extra
+         steps):
+         - Per-user install (InstallScope="perUser") into the installing
+           user's own profile. Every file and folder, including data\,
+           cookies\, and logs\ below, is created by the Windows Installer
+           with ACLs inherited from that user's profile: owned by the
+           installing user, readable/writable by them, and NOT accessible
+           to other accounts on the machine. No UAC or admin rights are
+           used, so a standard user can install and use the app normally.
+         - InstallPrivileges="limited" (on the <Package> element above)
+           refuses to run this MSI elevated. Without it, a user who
+           right-clicks "Run as administrator" (or an IT deployment tool
+           running elevated) would install into the ADMINISTRATOR's
+           profile instead of their own: [USERPROFILE] resolves to the
+           elevated account, and the real user would then not be able
+           to write data\, cookies\, or logs\, breaking saved settings,
+           downloads, and caching in confusing ways.
+         - The app independently verifies at startup that its data and
+           log folders are writable and speaks a clear warning if they
+           are not, so this failure mode is never silent. -->
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="INSTALLFOLDER">
+        <Directory Id="APPFOLDER" Name="app" />
+        <Directory Id="COOKIESFOLDER" Name="cookies" />
+        <Directory Id="DATAFOLDER" Name="data" />
+        <Directory Id="LOGSFOLDER" Name="logs" />
+        <Directory Id="TOOLSFOLDER" Name="tools" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppProgramMenuFolder" Name="Media Tug" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <!-- ================= App + tools files (harvested by heat.exe) ================= -->
+    <!-- ComponentGroupRef "AppFilesGroup" is generated by build_installer.bat
+         from release\MediaTug\app, and "ToolsFilesGroup" the same way
+         from release\MediaTug\tools (ffmpeg.exe/ffprobe.exe, fetched by
+         fetch_ffmpeg.py) - see that script's heat.exe calls. This keeps
+         this file correct even though a PyInstaller onedir build can be
+         dozens or hundreds of files and changes between builds; nothing
+         here needs manual updating when either folder's contents change.
+         tools\ used to have no ComponentGroupRef at all, which meant the
+         MSI never actually included ffmpeg.exe regardless of what
+         build.bat produced - every MSI install got an empty tools\
+         folder and every download silently failed after the initial
+         fetch. -->
+    <Feature Id="MainApplication" Title="Media Tug" Level="1">
+      <ComponentGroupRef Id="AppFilesGroup" />
+      <ComponentGroupRef Id="ToolsFilesGroup" />
+      <ComponentRef Id="ShortcutsComponent" />
+      <ComponentRef Id="CookiesFolderComponent" />
+      <ComponentRef Id="DataFolderComponent" />
+      <ComponentRef Id="LogsFolderComponent" />
+    </Feature>
+
+    <!-- Empty sibling folders the app expects to find at first launch
+         (it will also create them itself via os.makedirs if missing, so
+         this is a convenience, not a hard requirement). TOOLSFOLDER has
+         no such component here since ToolsFilesGroup above always
+         populates it with real files. -->
+    <DirectoryRef Id="COOKIESFOLDER">
+      <Component Id="CookiesFolderComponent" Guid="52076642-E35C-4653-AE05-EB4D0FD8DC17">
+        <CreateFolder />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="DATAFOLDER">
+      <Component Id="DataFolderComponent" Guid="23BABF64-EBA5-4060-B471-2F0AB8D598B4">
+        <CreateFolder />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="LOGSFOLDER">
+      <Component Id="LogsFolderComponent" Guid="C564B342-1E30-4E26-8AB8-05FC4BF44508">
+        <CreateFolder />
+      </Component>
+    </DirectoryRef>
+
+    <!-- ================= Shortcuts ================= -->
+    <DirectoryRef Id="AppProgramMenuFolder">
+      <Component Id="ShortcutsComponent" Guid="3278DF36-A1E4-4B5E-8456-54774E6857D9">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="Media Tug"
+                  Description="Download and play media, built for accessibility"
+                  Target="[APPFOLDER]media_tug.exe"
+                  WorkingDirectory="APPFOLDER" />
+        <Shortcut Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="Media Tug"
+                  Description="Download and play media, built for accessibility"
+                  Target="[APPFOLDER]media_tug.exe"
+                  WorkingDirectory="APPFOLDER" />
+        <Shortcut Id="UninstallShortcut"
+                  Name="Uninstall Media Tug"
+                  Target="[System64Folder]msiexec.exe"
+                  Arguments="/x [ProductCode]" />
+        <RemoveFolder Id="RemoveAppProgramMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\Harith Alhamdani\MediaTug"
+                        Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Icon Id="MediaTugIcon.exe" SourceFile="release\MediaTug\app\media_tug.exe" />
+    <Property Id="ARPPRODUCTICON" Value="MediaTugIcon.exe" />
+    <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+    <!-- ARPNOMODIFY is deliberately NOT declared here: WixUI_Minimal
+         (referenced below) already defines this property internally to
+         disable the "Change" button in Add/Remove Programs, since the
+         Minimal UI has no modify functionality. Declaring it again here
+         causes a duplicate-symbol link error (LGHT0091/LGHT0092). -->
+
+    <!-- ================= UI: Welcome -> Progress -> Finish ================= -->
+    <UIRef Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <!-- Skip the License page entirely: Welcome's Next goes straight to
+         the ready-to-install dialog, and that dialog's Back returns to
+         Welcome instead of to License. Also wires up the "Launch Media
+         Tug now" checkbox on the Finish dialog. -->
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2">1</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">1</Publish>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed
+      </Publish>
+    </UI>
+
+    <!-- "Launch Media Tug now" checkbox on the Finish dialog. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Media Tug now" />
+    <Property Id="WixShellExecTarget" Value="[APPFOLDER]media_tug.exe" />
+    <CustomAction Id="LaunchApplication" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
+
+    <UIRef Id="WixUI_ErrorProgressText" />
+
+  </Product>
+</Wix>

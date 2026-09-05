@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Overrides the stock WixUI_Minimal Welcome-page text. WixUI's own
+  built-in strings (from WixUI_en-us.wxl, shipped inside WixUIExtension)
+  define this same String Id; a user-supplied .wxl passed to light.exe
+  takes precedence over the extension's built-in one for a matching
+  Id + Culture, so this replaces it without touching installer.wxs or
+  redefining the dialog itself.
+-->
+<WixLocalization Culture="en-us" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="WelcomeDlgDescription">Welcome! I built this app for the community with one main goal: to make your day-to-day a little easier. I hope you enjoy using it as much as I enjoyed creating it.&#13;&#10;&#13;&#10;If you run into any bugs or have ideas for new features, just click the Contact Harith button on the About page.</String>
+</WixLocalization>

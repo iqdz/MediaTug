@@ -1,13 +1,82 @@
-# Python
+# ------------------------------------------------------------------
+# Media Tug - .gitignore
+# Keeps GitHub to the repo essentials: source, build scripts,
+# installer source, docs, and sounds. Everything generated, fetched,
+# or user-local is ignored and rebuilt/re-fetched by run.bat / build.bat.
+# ------------------------------------------------------------------
+
+# --- Python bytecode / caches ---
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
+*.pyo
+
+# --- Local dev dependencies (installed by run.bat via pip --target) ---
+libs/
+
+# --- Runtime third-party binaries fetched & version-checked by the
+#     build/run scripts (VLC, ffmpeg, aria2, yt-dlp). Huge and
+#     re-downloadable; never commit. ---
+dependencies/
+
+# --- Build outputs ---
 build/
-develop-eggs/
 dist/
-downloads/
+release/
+
+# --- PyInstaller work files ---
+*.toc
+*.pyz
+warn-*.txt
+xref-*.html
+
+# --- WiX / MSI artifacts ---
+# Hand-written source stays tracked: installer.wxs, CustomStrings.wxl,
+# License.rtf. The rest is produced on every installer build.
+*.wixobj
+*.wixpdb
+*.msi
+output.log
+# heat.exe regenerates these two file lists each time build_installer.bat runs:
+AppFiles.wxs
+ToolsFiles.wxs
+
+# --- Logs (anywhere) ---
+*.log
+
+# --- App runtime data: user settings, playback cache, cookies ---
+data/
+cookies/
+logs/
+
+# --- Helper script output ---
+debug_directory_log.txt
+
+# --- Editor / OS noise ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.Spotlight-V100
+.Trashes
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+Thumbs.db
+Desktop.ini
+
+# --- Generic Python packaging noise (kept from the repo's original
+#     .gitignore; not currently produced by this project's own build
+#     scripts, but harmless to keep excluded). NOTE: unlike the old
+#     .gitignore, *.spec / media_tug.spec is deliberately NOT listed
+#     here -- media_tug.spec is a tracked repo essential (the
+#     PyInstaller spec build.bat depends on). ---
+.Python
+develop-eggs/
 eggs/
 .eggs/
 lib/
@@ -22,56 +91,16 @@ wheels/
 MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
-
-# Virtual environments
 venv/
 ENV/
 env/
 .venv
 
-# Local development libs folder
-libs/
-
-# PyInstaller
-*.manifest
-*.spec
-media_tug.spec
-
-# IDE & Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-.project
-.pydevproject
-.settings/
-*.sublime-project
-*.sublime-workspace
-
-# OS-specific
-Thumbs.db
-.DS_Store
-.Spotlight-V100
-.Trashes
-
-# App-specific folders (user data, not tracked)
-data/
-cookies/
-logs/
-Media_Tug/
-dist/
-
-# Portable build output
-*.zip
-
-# Cache
-.cache/
-*.cache
-
-# Misc
+# --- Misc ---
 *.bak
 *.tmp
 .env
 .env.local
+
+# --- Packaged/zipped copies of this project (built artifacts, not source) ---
+*.zip

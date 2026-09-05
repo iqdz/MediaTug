@@ -1,0 +1,321 @@
+========================================================
+Media Tug - Project Documentation
+========================================================
+
+Version      : 1.0.0  (source of truth: VERSION.txt)
+Author       : Harith Alhamdani
+Contact email: harith@gvoice.org   (do not change - email address)
+Application  : Media Tug (an accessible media player and downloader)
+License      : GNU General Public License version 2 (GPL-2.0)
+Platform     : Windows (screen reader users are the primary audience)
+UI Toolkit   : wxPython (native Windows controls)
+Playback     : VLC engine via python-vlc (libvlc)
+Downloads    : yt-dlp + ffmpeg + aria2
+
+--------------------------------------------------------
+1. What Media Tug is
+--------------------------------------------------------
+Media Tug is a keyboard-first, screen reader friendly media player and
+downloader for Windows. It was designed with NVDA/JAWS users as the
+primary audience from the start, so it relies on:
+
+  - Native wxWidgets controls (standard Windows dialogs and widgets)
+  - A live status bar that screen readers announce as a live region
+  - SAPI5 speech (System.Speech) for spoken announcements, queued on a
+    background thread so it never blocks the UI
+  - Sound cues: system-ready.wav on startup and complete.wav when a
+    search finishes
+  - No custom graphics-heavy UI that could confuse a screen reader
+
+The app deliberately keeps startup quiet: it plays the system-ready
+cue and moves keyboard focus natively to the search box (announced by
+the screen reader itself). It does not speak a SAPI5 welcome line over
+the screen reader at startup.
+
+--------------------------------------------------------
+2. Current feature state (1.0.0)
+--------------------------------------------------------
+Search / play:
+  - Search YouTube and other supported sites through yt-dlp
+  - Paste any supported link into the search box and press Enter
+  - Playlist/channel links are detected automatically and open a
+    download confirmation ("Start Download: Playlist or Channel");
+    playlist/channel downloads are saved into a 'Playlists' subfolder
+  - Results list shows one item per line with duration and other info;
+    pressing Down Arrow on the last item loads more results (10 at a
+    time)
+  - Enter plays the selected result; the context menu offers download
+    options
+  - Ctrl+Shift+V plays the selected item with video (slower to start)
+
+Player:
+  - Dedicated modal player window that captures keyboard focus
+  - Space or Ctrl+P: play/pause
+  - Ctrl+M: mute/unmute
+  - Up/Down Arrows: volume
+  - Left/Right Arrows: seek
+  - Escape or Ctrl+W: close the player
+  - Ctrl+D inside the player downloads the currently playing track
+  - Ctrl+L inside the player copies the currently playing link
+  - Ctrl+Shift+V shows the video for the currently playing audio in a
+    separate window for sharing with a sighted person
+
+Downloads:
+  - Save as MP3 audio or video, with configurable quality
+  - Download folder, audio quality, video quality, skip seconds,
+    volume step, cache retention and more are set in Settings (Alt+S)
+  - aria2c (when present) speeds up save-to-disk/channel/video-fetch
+    downloads with up to 16 parallel connections
+  - ffmpeg is used for audio extraction/conversion and thumbnail
+    embedding
+  - Browser cookies support (choose a browser source or a cookies.txt
+    file) for sites that need them
+  - Downloads run in the background and announce progress every few
+    seconds
+  - If a download attempt with cookies fails, it retries once without
+    them automatically
+
+Playback cache:
+  - Play-now items are cached under data\playback_cache and pruned by
+    age according to the retention setting (1/2/7/30 days)
+  - Shift+Alt+C clears the playback cache manually
+
+Settings & preferences (Alt+S):
+  - Download path (with a sensible default: Downloads, then Documents,
+    then profile root)
+  - Download format: MP3 Audio or video
+  - Video quality / audio quality / skip seconds / volume step
+  - Debug logging toggle (writes media_tug_debug.log)
+  - Use browser cookies: source selection or a cookies file path
+  - Cache retention
+  - Auto-paste clipboard option (pastes links when the window regains
+    focus)
+
+Accessibility extras:
+  - Visual hint panel (plain painted text) used for sighted people
+    sharing the screen; intentionally not exposed to the MSAA/UIA
+    accessibility tree so NVDA/JAWS cannot read it
+  - Activity Log (scrollback) plus a status bar for spoken
+    announcements
+  - Screen reader detection via SPI_GETSCREENREADER; some alerts only
+    speak when a screen reader is active
+
+Help and About:
+  - Alt+H opens Help (hotkey reference)
+  - The About page (button near the top) states the app name, author
+    (Harith Alhamdani), version read from VERSION.txt, hotkeys,
+    licensing of bundled components, and links to supported sites,
+    the GitHub repository, contact email, and support page
+
+--------------------------------------------------------
+3. Hotkeys reference (as shown in the app)
+--------------------------------------------------------
+  Control+F         Focus the search box
+  Control+D         Download selected item(s) from results, or the
+                    currently playing track inside the player
+  Control+L         Copy the selected link (or the playing link)
+  Control+Shift+E   Share the selected link by email
+  Control+Shift+O   Open the selected link in your web browser
+  Control+Shift+V   Play the selected item with video
+  Alt+S             Open Settings & Preferences
+  Alt+H             Open Help
+  Shift+Alt+C       Clear the playback cache
+  Enter             Play the selected result
+  Escape            Close results panel / player / dialog
+  Space / Ctrl+P    Play or pause (player)
+  Ctrl+M            Mute (player)
+  Up / Down Arrows  Volume (player)
+  Left / Right      Seek (player)
+  Ctrl+W            Close player window
+  Context menu key  Download options on a result
+
+--------------------------------------------------------
+4. Folder layout
+--------------------------------------------------------
+Repo root (source):
+  media_tug.py              The whole application (single file)
+  media_tug.spec            PyInstaller spec (builds app\ output)
+  run.bat                   Dev launcher: checks/fetches deps, runs
+                            media_tug.py with Python
+  build.bat                 Builds the portable release folder
+  build_installer.bat       Builds MediaTugSetup.msi (needs WiX v3)
+  Generate-DebugList.bat    Dev helper: writes debug_directory_log.txt
+  sync_vlc.py               Fetches/version-checks the VLC engine
+  fetch_ffmpeg.py           Fetches/version-checks ffmpeg builds
+  fetch_aria2.py            Fetches/version-checks aria2c
+  update_ytdlp.py           Fetches/version-checks yt-dlp nightly
+  installer.wxs             WiX source for the MSI installer
+  CustomStrings.wxl         WiX localization overrides (Welcome text)
+  License.rtf               Installer license text
+  sounds\                   system-ready.wav, complete.wav
+  VERSION.txt               Current version number (1.0.0)
+  BUILD_README.md           Build & installer pipeline notes
+  docs\MediaTug_documentation.txt   This file
+  .gitignore                GitHub repo essentials filter
+
+Generated / runtime folders (do not edit, never commit):
+  libs\                     pip --target dev dependencies (wxPython,
+                            curl_cffi, python-vlc)
+  dependencies\             Shared fetched binaries:
+                              vlc\   (libvlc.dll, plugins)
+                              ffmpeg\(ffmpeg.exe, ffprobe.exe)
+                              aria2\ (aria2c.exe)
+                              yt-dlp\(yt-dlp package, nightly)
+  build\, dist\             PyInstaller intermediates
+  release\MediaTug\         The portable app produced by build.bat:
+                              app\     media_tug.exe + bundled files
+                              tools\   ffmpeg.exe, ffprobe.exe, aria2c.exe
+                              cookies\ data\ logs\
+  data\                     media_tug_settings.json, playback_cache
+  cookies\                  Browser cookie cache used by the app
+  logs\                     media_tug_debug.log, vlc_native.log
+  __pycache__\              Python bytecode cache
+
+--------------------------------------------------------
+5. Running from source (development)
+--------------------------------------------------------
+  1. Install Python 3 (the project uses pip --target local folders).
+  2. Double-click run.bat, or run it from a Command Prompt.
+
+run.bat will:
+  - Create libs\ and pip-install wxPython, curl_cffi, and python-vlc
+    into it when missing
+  - Fetch/version-check yt-dlp nightly, ffmpeg, aria2c, and the VLC
+    engine into dependencies\ (used directly in dev mode)
+  - Check for Deno and install it via winget if missing (yt-dlp needs
+    it to solve YouTube's playback challenge)
+  - Launch media_tug.py
+
+Setup output is captured to run.log next to the script.
+
+--------------------------------------------------------
+6. Building the portable app
+--------------------------------------------------------
+Run: build.bat
+
+What it does:
+  1. Cleans previous build/dist/release folders
+  2. Ensures yt-dlp nightly is up to date in dependencies\yt-dlp
+  3. Runs PyInstaller from media_tug.spec (onedir output named app)
+  4. Assembles release\MediaTug\ with app\, cookies\, data\, logs\,
+     tools\; copies VERSION.txt into the release root and beside the
+     exe so the About page can read the version at runtime
+  5. Fetches the VLC engine into release\MediaTug\app
+  6. Fetches ffmpeg (ffmpeg.exe, ffprobe.exe) into release\MediaTug\tools
+  7. Fetches aria2c.exe into release\MediaTug\tools (optional but
+     recommended; downloads still work without it, just slower)
+
+The console prints the version banner at the start:
+      === Media Tug build: version 1.0.0 ===
+
+Output: release\MediaTug\ IS the portable app - copy it anywhere and
+run app\media_tug.exe. Build output is saved to build.log.
+
+--------------------------------------------------------
+7. Building the MSI installer (optional)
+--------------------------------------------------------
+Prerequisite: WiX Toolset v3 (wix314.exe). Run build_installer.bat
+AFTER build.bat so release\MediaTug\app and release\MediaTug\tools
+exist.
+
+What it does:
+  - harvests every file under release\MediaTug\app (AppFiles.wxs)
+    and release\MediaTug\tools (ToolsFiles.wxs) with heat.exe
+  - compiles installer.wxs + the two fragments with candle.exe
+  - links MediaTugSetup.msi with light.exe
+  - saves full output to output.log
+
+Installer behavior:
+  - Per-user install; no admin rights needed
+  - Installs to %USERPROFILE%\MediaTug (sibling of Documents,
+    Downloads, Music)
+  - Minimal wizard: Welcome -> Ready -> Finish (License page skipped)
+  - Native Windows dialogs throughout (screen reader friendly)
+  - Adds Start Menu entry and Desktop shortcut
+  - Finish dialog has "Launch Media Tug now" checkbox
+  - Uninstall removes app\ and the shortcuts but deliberately keeps
+    cookies\, data\, and logs\ (user settings and cache survive)
+
+--------------------------------------------------------
+8. Versioning workflow
+--------------------------------------------------------
+- VERSION.txt at the repo root is the single source of truth for the
+  app version shown on the About page (currently: 1.0.0).
+- To bump the version: edit VERSION.txt only. No code change needed.
+- build.bat reads VERSION.txt, prints it in the console, and copies it
+  into the release folder (root and app\), so the built app's About
+  page states the same version the build was made with.
+- media_tug.py reads VERSION.txt at startup from next to the exe, from
+  _internal\ (PyInstaller 6.x data layout), or from the portable root;
+  if the file is missing it falls back to "unknown" and never crashes.
+- The MSI Version in installer.wxs must stay in sync manually (WiX
+  requires four parts, e.g. 1.0.0.0 for version 1.0.0).
+
+--------------------------------------------------------
+9. Data, privacy, and maintenance
+--------------------------------------------------------
+- data\media_tug_settings.json stores user settings.
+- data\playback_cache\ holds recently played/cached media files and is
+  pruned by the retention setting.
+- cookies\ and browser-cookie usage follow the user's Settings choice;
+  the app can also use a cookies.txt file.
+- logs\ contains media_tug_debug.log (when debug logging is enabled)
+  and vlc_native.log (native VLC diagnostics).
+- The app verifies its data/log folders are writable at startup and
+  warns clearly if they are not (e.g. an MSI installed under another
+  user's account).
+
+--------------------------------------------------------
+10. Bundled components and licenses
+--------------------------------------------------------
+  yt-dlp                 Public domain (Unlicense)
+  VLC / libVLC           GNU LGPL version 2.1 or later
+  FFmpeg (Gyan.dev)      GPL-3.0 build (ffmpeg.exe, ffprobe.exe)
+  aria2                  GPL version 2 or later
+  wxPython               wxWindows Library Licence
+  Python                 Python Software Foundation License
+  PyInstaller            GPL-2+ with the PyInstaller bootloader
+                         exception
+  Media Tug itself       GPL-2.0
+
+Full license texts are available on each project's website.
+
+--------------------------------------------------------
+11. Contact and links
+--------------------------------------------------------
+  Author        : Harith Alhamdani
+  Contact email : harith@gvoice.org (About page "Contact" button opens
+                  a mailto to this address)
+  GitHub        : About page "GitHub Repository" button (verify the
+                  repository URL before the first public release)
+  Supported sites: About page "View Currently Supported Media Websites"
+                  opens yt-dlp's live supported sites list
+  Support       : About page has a "support the developer" button
+                  (ko-fi)
+
+--------------------------------------------------------
+12. GitHub repo essentials (.gitignore overview)
+--------------------------------------------------------
+Tracked (repo essentials):
+  media_tug.py, media_tug.spec, run.bat, build.bat,
+  build_installer.bat, Generate-DebugList.bat, sync_vlc.py,
+  fetch_ffmpeg.py, fetch_aria2.py, update_ytdlp.py, BUILD_README.md,
+  installer.wxs, CustomStrings.wxl, License.rtf, sounds\*.wav,
+  VERSION.txt, .gitignore, docs\MediaTug_documentation.txt
+
+Ignored:
+  libs\, dependencies\, build\, dist\, release\, data\, cookies\,
+  logs\, __pycache__\, *.log, *.wixobj, *.wixpdb, *.msi,
+  AppFiles.wxs, ToolsFiles.wxs, debug_directory_log.txt, editor noise
+
+--------------------------------------------------------
+13. Before the first public release (reminders)
+--------------------------------------------------------
+  - installer.wxs GUIDs (UpgradeCode and Component GUIDs) are already
+    real and unique - just keep UpgradeCode stable across future
+    versions so upgrades keep working.
+  - GitHub repository URL on the About page is set to
+    https://github.com/iqdz/MediaTug.
+  - Verify contact/support links are what you want to ship.
+  - Test the MSI with NVDA/JAWS exactly as the app is tested.
+  - Keep VERSION.txt and installer.wxs Version in sync.
