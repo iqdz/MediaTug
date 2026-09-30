@@ -37,6 +37,10 @@ Behavior:
   - Otherwise downloads the 7z archive, verifies it against Gyan.dev's
     published sha256 when available, extracts just ffmpeg.exe and
     ffprobe.exe into the cache, and records the new version.
+  - The archive is kept in the cache until both exes are out, so a
+    failed extraction is retried on the next run without downloading
+    it again. py7zr is tried first, Windows' own tar.exe second, and
+    each one's real error is written to fetch.log.
   - If Gyan.dev is unreachable, falls back to whatever's already in the
     cache -- a slightly stale ffmpeg still works fine offline.
   - The "full" build is only published as a .7z, not a .zip, so this
@@ -136,12 +140,104 @@ def write_cached_version(cache_dir, version):
         f.write(version)
 
 
-def download_and_extract(cache_dir):
+ARCHIVE_PREFIX = "ffmpeg-release-full-"
+
+
+def remove_archives(cache_dir, keep=()):
+    """Deletes archives kept in the cache, except the paths in `keep`."""
+    try:
+        names = os.listdir(cache_dir)
+    except OSError:
+        return
+    for name in names:
+        full = os.path.join(cache_dir, name)
+        if name.startswith(ARCHIVE_PREFIX) and full not in keep:
+            try:
+                os.remove(full)
+                log(cache_dir, f"Removed old archive {name}.")
+            except OSError:
+                pass
+
+
+def _published_sha256():
+    with urllib.request.urlopen(SHA256_URL, timeout=15) as resp:
+        return resp.read().decode("ascii").split()[0].lower()
+
+
+def _find_exes(extract_dir):
+    found = {}
+    for root, _dirs, files in os.walk(extract_dir):
+        for name in files:
+            low = name.lower()
+            if low in EXE_NAMES and low not in found:
+                found[low] = os.path.join(root, name)
+    return found
+
+
+def _extract_with_py7zr(archive_path, extract_dir, cache_dir):
+    """First extractor: py7zr, extracting only ffmpeg.exe and ffprobe.exe.
+    Right after a download Windows sometimes keeps the new file locked for
+    a moment (antivirus scanning it), so a lock is retried briefly."""
     ensure_py7zr(cache_dir)
     import py7zr
+    last_error = None
+    for attempt in range(10):
+        try:
+            with py7zr.SevenZipFile(archive_path, mode="r") as archive:
+                wanted = [n for n in archive.getnames()
+                          if os.path.basename(n).lower() in EXE_NAMES]
+                if not wanted:
+                    raise RuntimeError("the archive lists no ffmpeg.exe or ffprobe.exe")
+                archive.extract(path=extract_dir, targets=wanted)
+            return
+        except PermissionError as e:
+            last_error = e
+            log(cache_dir, f"  Archive is still locked (attempt {attempt + 1}/10: {e}) -- "
+                            f"probably antivirus scanning it briefly. Retrying in 2s...")
+            time.sleep(2)
+    raise RuntimeError(f"archive still locked after repeated retries: {last_error}")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        archive_path = os.path.join(tmp, "ffmpeg-release-full.7z")
+
+def _extract_with_windows_tar(archive_path, extract_dir, cache_dir):
+    """Second extractor: Windows' own tar.exe, which reads .7z as well. The
+    System32 copy is used by full path, since another tar.exe on PATH (for
+    example Git's) may not read .7z at all."""
+    tar = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "tar.exe")
+    if not os.path.isfile(tar):
+        raise RuntimeError("Windows tar.exe not found")
+    os.makedirs(extract_dir, exist_ok=True)
+    cmd = [tar, "-xf", archive_path, "-C", extract_dir,
+           "--include", "*ffmpeg.exe", "--include", "*ffprobe.exe"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()[:500]
+        raise RuntimeError(f"tar exit {result.returncode}: {detail}")
+
+
+def download_and_extract(cache_dir, version):
+    """Gets the archive for `version` into the cache, reusing one kept from
+    an earlier run, extracts only ffmpeg.exe and ffprobe.exe into the cache,
+    then deletes the archive. On any failure the archive stays in the cache,
+    so the next run retries the extraction without downloading it again."""
+    os.makedirs(cache_dir, exist_ok=True)
+    archive_path = os.path.join(cache_dir, f"{ARCHIVE_PREFIX}{version}.7z")
+    part_path = archive_path + ".part"
+    remove_archives(cache_dir, keep=(archive_path,))
+
+    try:
+        expected = _published_sha256()
+    except Exception as e:
+        expected = None
+        log(cache_dir, f"Warning: could not read the published checksum ({e}).")
+
+    if os.path.isfile(archive_path):
+        if expected and hash_file(archive_path) != expected:
+            log(cache_dir, "The kept archive does not match the published checksum -- downloading again.")
+            os.remove(archive_path)
+        else:
+            log(cache_dir, f"Reusing the archive kept from an earlier run: {os.path.basename(archive_path)}")
+
+    if not os.path.isfile(archive_path):
         log(cache_dir, f"Downloading {ARCHIVE_URL} ...")
         last_reported = [0]
 
@@ -154,80 +250,59 @@ def download_and_extract(cache_dir):
                     log(cache_dir, f"  ...{pct}% ({downloaded:,}/{total_size:,} bytes)")
 
         try:
-            urllib.request.urlretrieve(ARCHIVE_URL, archive_path, reporthook=report_progress)
+            urllib.request.urlretrieve(ARCHIVE_URL, part_path, reporthook=report_progress)
         except Exception as e:
             raise RuntimeError(f"download from {ARCHIVE_URL} failed: {e}")
-        downloaded_size = os.path.getsize(archive_path)
+        downloaded_size = os.path.getsize(part_path)
         log(cache_dir, f"Downloaded {downloaded_size:,} bytes.")
         if downloaded_size < 1024 * 1024:
             # A real "full" ffmpeg 7z is well over 100 MB. Anything under
-            # 1 MB is almost certainly an HTML error page (e.g. a proxy's
-            # block page, or a redirected 404) saved with the .7z name,
-            # not an actual archive -- fail loudly here with that file's
-            # own content in the log, instead of letting py7zr raise a
-            # much more confusing "not a 7z archive" error below.
-            with open(archive_path, "r", encoding="utf-8", errors="replace") as f:
+            # 1 MB is almost certainly an HTML error page (a proxy's block
+            # page, a redirected 404) saved with the .7z name.
+            with open(part_path, "r", encoding="utf-8", errors="replace") as f:
                 preview = f.read(500)
+            os.remove(part_path)
             log(cache_dir, f"Downloaded file is suspiciously small ({downloaded_size} bytes) -- "
                             f"this is probably not a real archive. First 500 chars: {preview!r}")
             raise RuntimeError("downloaded file is too small to be a real ffmpeg archive "
                                 "(likely blocked/redirected by a firewall or proxy -- see fetch.log)")
-
-        try:
-            with urllib.request.urlopen(SHA256_URL, timeout=15) as resp:
-                expected = resp.read().decode("ascii").split()[0].lower()
-            actual = hash_file(archive_path)
+        if expected:
+            actual = hash_file(part_path)
             if actual != expected:
+                os.remove(part_path)
                 raise RuntimeError(f"checksum mismatch (expected {expected}, got {actual})")
             log(cache_dir, "Checksum verified OK.")
-        except Exception as e:
-            log(cache_dir, f"Warning: could not verify the ffmpeg download's checksum ({e}). Continuing anyway.")
+        os.replace(part_path, archive_path)
 
+    tmp = tempfile.mkdtemp(prefix="mt_ffmpeg_")
+    try:
         extract_dir = os.path.join(tmp, "extracted")
-        log(cache_dir, "Extracting archive (this can take a minute)...")
-        # Right after urlretrieve finishes, Windows sometimes still has the
-        # freshly-written file locked for a moment -- almost always
-        # antivirus real-time scanning it, not anything actually wrong
-        # with the download (this is a very common Windows quirk, not
-        # specific to this archive or this machine). Retrying briefly
-        # clears it in practically all cases; only give up if it's still
-        # locked after several seconds, since that could mean something
-        # else entirely.
-        last_error = None
-        for attempt in range(10):
-            try:
-                with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-                    archive.extractall(path=extract_dir)
-                last_error = None
-                break
-            except PermissionError as e:
-                last_error = e
-                log(cache_dir, f"  Archive is still locked (attempt {attempt + 1}/10: {e}) -- "
-                                f"probably antivirus scanning it briefly. Retrying in 2s...")
-                time.sleep(2)
-        if last_error is not None:
-            raise RuntimeError(f"py7zr could not open the downloaded archive after repeated retries "
-                                f"(still locked): {last_error}")
-
-        # Archive layout is ffmpeg-<version>-full_build/bin/{ffmpeg,ffprobe}.exe
+        log(cache_dir, "Extracting ffmpeg.exe and ffprobe.exe...")
+        errors = []
         found = {}
-        all_exes_seen = []
-        for root, _dirs, files in os.walk(extract_dir):
-            for name in files:
-                if name.lower() in EXE_NAMES and name.lower() not in found:
-                    found[name.lower()] = os.path.join(root, name)
-                if name.lower().endswith(".exe"):
-                    all_exes_seen.append(os.path.relpath(os.path.join(root, name), extract_dir))
-        missing = [n for n in EXE_NAMES if n not in found]
-        if missing:
-            log(cache_dir, f"Extracted archive's .exe files: {all_exes_seen or '(none found at all)'}")
-            raise RuntimeError(f"could not find {', '.join(missing)} inside the downloaded archive "
-                                f"(see fetch.log for every .exe the archive actually contained)")
-
-        os.makedirs(cache_dir, exist_ok=True)
+        for extractor in (_extract_with_py7zr, _extract_with_windows_tar):
+            try:
+                extractor(archive_path, extract_dir, cache_dir)
+                found = _find_exes(extract_dir)
+                if all(n in found for n in EXE_NAMES):
+                    log(cache_dir, f"  Extracted with {extractor.__name__}.")
+                    break
+                errors.append(f"{extractor.__name__}: finished, but ffmpeg.exe or ffprobe.exe is missing")
+            except Exception as e:
+                errors.append(f"{extractor.__name__}: {type(e).__name__}: {e}")
+            log(cache_dir, f"  {errors[-1]}")
+            found = {}
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        if not found:
+            raise RuntimeError("could not extract the archive; it is kept for the next run. "
+                               + " | ".join(errors))
         for name, path in found.items():
             shutil.copy2(path, os.path.join(cache_dir, name))
-        log(cache_dir, f"Copied {', '.join(found)} into the cache.")
+        log(cache_dir, f"Copied {', '.join(sorted(found))} into the cache.")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    remove_archives(cache_dir)
 
 
 def copy_from_cache(cache_dir, target_dir):
@@ -288,13 +363,14 @@ def main():
 
     if latest == cached_version and cache_valid:
         log(args.cache, f"ffmpeg {latest} is already cached -- using it, nothing to download.")
+        remove_archives(args.cache)
         copy_from_cache(args.cache, args.target)
         log(args.cache, f"Done -- ffmpeg {latest} copied into {args.target}")
         return 0
 
     log(args.cache, f"Fetching ffmpeg {latest} (currently cached: {cached_version or 'none'})...")
     try:
-        download_and_extract(args.cache)
+        download_and_extract(args.cache, latest)
         write_cached_version(args.cache, latest)
     except Exception as e:
         log(args.cache, f"Could not download/extract ffmpeg: {e}")

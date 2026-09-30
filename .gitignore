@@ -31,8 +31,10 @@ warn-*.txt
 xref-*.html
 
 # --- WiX / MSI artifacts ---
-# Hand-written source stays tracked: installer.wxs, CustomStrings.wxl,
-# License.rtf. The rest is produced on every installer build.
+# Hand-written source stays tracked in installer\: installer.wxs,
+# CustomStrings.wxl, License.rtf. build_installer.bat writes everything
+# it produces into release\installer\ (ignored above); the patterns
+# below also catch any stray copy elsewhere.
 *.wixobj
 *.wixpdb
 *.msi
@@ -51,6 +53,9 @@ logs/
 
 # --- Helper script output ---
 debug_directory_log.txt
+
+# --- Workflow scripts and their reports (local only, never committed) ---
+scripts/
 
 # --- Editor / OS noise ---
 .vscode/

@@ -15,7 +15,7 @@ import glob
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 datas = []
 binaries = []
@@ -31,6 +31,32 @@ hiddenimports = []
 _ytdlp_dir = os.path.join(SPECPATH, 'dependencies', 'yt-dlp')
 if os.path.isdir(_ytdlp_dir) and _ytdlp_dir not in sys.path:
     sys.path.insert(0, _ytdlp_dir)
+
+# run.bat installs accessible_output2 (and a few small helpers) into
+# libs\, so the build looks there too, the same way as for yt-dlp above.
+_libs_dir = os.path.join(SPECPATH, 'libs')
+if os.path.isdir(_libs_dir) and _libs_dir not in sys.path:
+    sys.path.insert(0, _libs_dir)
+
+# Screen reader client libraries, as in ZBox's zbox.spec.
+#
+# Media Tug has no voice of its own. An announcement is handed to
+# whichever screen reader is running through that reader's own client
+# library, and those are DLLs inside the accessible_output2 package, in a
+# lib folder beside its Python files. PyInstaller does not collect a
+# package's data folder on its own: from source everything works, and a
+# build without them starts fine and says nothing, on exactly the
+# machines that matter. collect_data_files keeps the package-relative
+# path, so they land at _internal\accessible_output2\lib, which is where
+# the library looks when frozen. A build without them stops here.
+_AO2_CLIENT_LIBS = collect_data_files('accessible_output2', includes=['lib/*.dll'])
+if not _AO2_CLIENT_LIBS:
+    raise SystemExit(
+        'No screen reader client libraries were found inside the '
+        'accessible_output2 package. A build without them cannot reach '
+        'any screen reader. Run run.bat once, which installs it into '
+        'libs, then build again.'
+    )
 
 # Bundle the sounds/ folder's WAV files (system-ready.wav, complete.wav)
 # as data files for the frozen build. NOTE: PyInstaller 6.x+ places data
@@ -52,9 +78,14 @@ datas += _ytdlp_datas
 binaries += _ytdlp_binaries
 hiddenimports += _ytdlp_hidden
 
+# Screen reader output: the client DLLs collected above, and the modules
+# reached only through an import inside a function in screen_reader.py.
+datas += _AO2_CLIENT_LIBS
+hiddenimports += ['accessible_output2.outputs.auto', 'win32com.client']
+
 a = Analysis(
     ['media_tug.py'],
-    pathex=[_ytdlp_dir] if os.path.isdir(_ytdlp_dir) else [],
+    pathex=[p for p in (_ytdlp_dir, _libs_dir) if os.path.isdir(p)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -77,8 +108,8 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,       # no console window -- SAPI5 announcements and
-                          # the wx UI are the whole interface
+    console=False,       # no console window -- the wx UI and the
+                          # screen reader are the whole interface
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -140,7 +140,17 @@ if not getattr(sys, 'frozen', False):
     _base_dir = os.path.dirname(os.path.abspath(__file__))
     _libs_dir = os.path.join(_base_dir, 'libs')
     if os.path.isdir(_libs_dir) and _libs_dir not in sys.path:
-        sys.path.insert(0, _libs_dir)
+        # site.addsitedir rather than a plain sys.path insert: it also runs
+        # the folder's .pth files, which some packages need in order to
+        # start up (pywin32, if it is ever installed here). Whatever it
+        # adds is moved to the front, so libs still wins over a global copy.
+        import site
+        _before = list(sys.path)
+        site.addsitedir(_libs_dir)
+        _added = [p for p in sys.path if p not in _before]
+        for _p in _added:
+            sys.path.remove(_p)
+        sys.path[0:0] = _added
     _ytdlp_dir = os.path.join(_base_dir, 'dependencies', 'yt-dlp')
     if os.path.isdir(_ytdlp_dir) and _ytdlp_dir not in sys.path:
         sys.path.insert(0, _ytdlp_dir)
@@ -148,50 +158,15 @@ if not getattr(sys, 'frozen', False):
 from yt_dlp import YoutubeDL
 from yt_dlp.cookies import load_cookies as _load_browser_cookies
 
+import download_formats
+import favorite_channels
+import screen_reader
+
 
 class _PlaybackCancelled(Exception):
     """Raised to abort an in-flight playback download when the user cancels
     (Escape) before it has finished."""
     pass
-
-
-class _Speaker:
-    """Speaks text aloud with Windows SAPI5 (System.Speech). Messages are
-    queued and spoken one at a time on a daemon thread, so announcements
-    never overlap and never block the UI. SAPI5 ships with .NET Framework
-    and is available on Windows 10/11 out of the box."""
-    def __init__(self):
-        self._queue = queue.Queue()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def speak(self, text):
-        self._queue.put(text)
-
-    def _run(self):
-        while True:
-            text = self._queue.get()
-            if text is None:
-                break
-            self._sapi_speak(text)
-
-    @staticmethod
-    def _sapi_speak(text):
-        escaped = text.replace("'", "''")
-        command = (
-            "Add-Type -AssemblyName System.Speech; "
-            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            f"$s.Speak('{escaped}')"
-        )
-        try:
-            subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-                capture_output=True,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-                timeout=60,
-            )
-        except Exception:
-            pass
 
 
 def create_desktop_shortcut():
@@ -531,23 +506,31 @@ class SettingsDialog(wx.Dialog):
         folder_sizer.Add(browse_btn, 0, wx.ALL, self.FIELD_PAD)
         add_section(folder_sizer)
 
-        # Download Format: Video or Audio (mutually exclusive)
+        # Download Format: Video or Audio (mutually exclusive). The file
+        # format and quality of each come from Advanced download options.
+        download_formats.normalize_config(self.config)
         format_box = wx.StaticBox(panel, label="Download Format")
         format_box.SetFont(section_font)
         format_sizer = wx.StaticBoxSizer(format_box, wx.VERTICAL)
         self.format_radio = wx.RadioBox(
-            format_box, label="Download as", choices=["MP3 Audio", "MP4 Video"],
+            format_box, label="Download as", choices=["Audio", "Video"],
             style=wx.RA_SPECIFY_ROWS
         )
-        self.format_radio.SetStringSelection(self.config.get('download_format', 'MP3 Audio'))
+        self.format_radio.SetStringSelection(self.config.get('download_format', 'Audio'))
         self.format_radio.Bind(wx.EVT_RADIOBOX, self.on_format_change)
         format_sizer.Add(self.format_radio, 0, wx.EXPAND | wx.ALL, self.FIELD_PAD)
 
-        video_quality_label = wx.StaticText(format_box, label="Video quality (used when MP4 Video is selected):")
+        # One Tab after the format choice.
+        self.advanced_btn = wx.Button(format_box, label="Advanced download options")
+        self.advanced_btn.SetToolTip("Choose the video and audio file formats and their quality.")
+        self.advanced_btn.Bind(wx.EVT_BUTTON, self.on_advanced)
+        format_sizer.Add(self.advanced_btn, 0, wx.ALL, self.FIELD_PAD)
+
+        video_quality_label = wx.StaticText(format_box, label="Video quality (used when Video is selected):")
         format_sizer.Add(video_quality_label, 0, wx.LEFT | wx.RIGHT | wx.TOP, self.FIELD_PAD)
         self.video_quality_choice = wx.Choice(
             format_box,
-            choices=["Best available", "1080p", "720p", "480p", "360p"]
+            choices=download_formats.VIDEO_QUALITIES[self.config['video_container']]
         )
         self.video_quality_choice.SetName("Video quality")
         self.video_quality_choice.SetStringSelection(self.config.get('video_quality', 'Best available'))
@@ -555,11 +538,12 @@ class SettingsDialog(wx.Dialog):
         add_section(format_sizer)
 
         # Audio Quality Selection
-        audio_box = wx.StaticBox(panel, label="MP3 Audio Quality Preference")
+        audio_box = wx.StaticBox(panel, label="Audio Quality Preference")
         audio_box.SetFont(section_font)
         audio_sizer = wx.StaticBoxSizer(audio_box, wx.VERTICAL)
-        self.audio_choice = wx.Choice(audio_box, choices=["128 kbps (Standard)", "192 kbps (High)", "320 kbps (Maximum)"])
-        self.audio_choice.SetStringSelection(self.config.get('audio_quality', '192 kbps (High)'))
+        self.audio_choice = wx.Choice(audio_box, choices=download_formats.AUDIO_QUALITIES[self.config['audio_codec']])
+        self.audio_choice.SetName("Audio quality")
+        self.audio_choice.SetStringSelection(self.config.get('audio_quality', '192 kbps'))
         audio_sizer.Add(self.audio_choice, 0, wx.EXPAND | wx.ALL, self.FIELD_PAD)
         add_section(audio_sizer)
 
@@ -785,9 +769,37 @@ class SettingsDialog(wx.Dialog):
             self.SetPosition((new_x, new_y))
 
     def on_format_change(self, event):
-        is_video = self.format_radio.GetStringSelection() == 'MP4 Video'
+        is_video = self.format_radio.GetStringSelection() == 'Video'
         self.video_quality_choice.Enable(is_video)
         self.audio_choice.Enable(not is_video)
+
+    def on_advanced(self, event):
+        """Opens Advanced download options. OK saves the choices at once,
+        so every following download uses exactly them, and refreshes the
+        quality lists on this page to match."""
+        values = {
+            'video_container': self.config.get('video_container', 'MP4'),
+            'video_quality': self.video_quality_choice.GetStringSelection(),
+            'audio_codec': self.config.get('audio_codec', 'MP3'),
+            'audio_quality': self.audio_choice.GetStringSelection(),
+        }
+        dlg = download_formats.AdvancedDownloadDialog(self, values)
+        if dlg.ShowModal() == wx.ID_OK:
+            self.config.update(dlg.values)
+            download_formats.normalize_config(self.config)
+            self.video_quality_choice.Set(download_formats.VIDEO_QUALITIES[self.config['video_container']])
+            self.video_quality_choice.SetStringSelection(self.config['video_quality'])
+            self.audio_choice.Set(download_formats.AUDIO_QUALITIES[self.config['audio_codec']])
+            self.audio_choice.SetStringSelection(self.config['audio_quality'])
+            parent = self.GetParent()
+            if hasattr(parent, 'save_config'):
+                parent.save_config()
+            if hasattr(parent, 'announce'):
+                parent.announce(
+                    f"Saved. Video downloads: {self.config['video_container']}, {self.config['video_quality']}. "
+                    f"Audio downloads: {self.config['audio_codec']}, {self.config['audio_quality']}.")
+        dlg.Destroy()
+        self.advanced_btn.SetFocus()
 
     def on_cookies_toggle(self, event):
         use_cookies = self.cookies_check.GetValue()
@@ -1351,20 +1363,28 @@ class AccessibleDownloaderFrame(wx.Frame):
     ID_HOTKEY_OPEN_BROWSER = 1009
     ID_HOTKEY_PLAY_VIDEO = 1010
     ID_HOTKEY_HELP = 1011
+    ID_HOTKEY_FAVORITES = 1012
 
     def __init__(self):
         super().__init__(parent=None, title="Media Tug", size=(800, 700))
 
-        self.speaker = _Speaker()
+        # Channels saved in Favorite Channels (Alt+F), and the one whose
+        # videos the results list is showing, if any.
+        self.favorites = favorite_channels.ChannelStore(os.path.join(DATA_DIR, 'favorite_channels.json'))
+        self.current_channel = None
+        self._results_generation = 0  # bumped when the list is cleared, so a late Load more is dropped
+        self._notice_timer = None
 
         # Use Downloads folder; fallback to Documents, then home directory
         default_download_dir = get_default_download_dir()
 
         self.app_config = {
             'download_path': default_download_dir,
-            'download_format': 'MP3 Audio',
+            'download_format': 'Audio',
+            'video_container': 'MP4',
             'video_quality': 'Best available',
-            'audio_quality': '192 kbps (High)',
+            'audio_codec': 'MP3',
+            'audio_quality': '192 kbps',
             'skip_seconds': 10,
             'volume_step': 5,
             'debug_logging': False,
@@ -1377,6 +1397,11 @@ class AccessibleDownloaderFrame(wx.Frame):
         self.config_file_path = os.path.join(DATA_DIR, 'media_tug_settings.json')
         self._download_path_reset_message = None
         self.load_config()
+        # Settings saved by older versions ('MP3 Audio', '192 kbps (High)')
+        # are brought in line with the current format choices.
+        download_formats.normalize_config(self.app_config)
+        self._downloads_lock = threading.Lock()
+        self._active_downloads = 0
         # Make sure the configured download folder actually exists and is
         # writable. If even the corrected default can't be used, fall back
         # to the profile root and let the user pick another folder in
@@ -1441,7 +1466,22 @@ class AccessibleDownloaderFrame(wx.Frame):
         help_btn.SetToolTip("Hotkey reference and help. (Alt+H)")
         help_btn.Bind(wx.EVT_BUTTON, self.open_help)
         top_bar.Add(help_btn, 0, wx.ALL, 5)
+        favorites_btn = wx.Button(panel, label="Favorite Channels")
+        favorites_btn.SetToolTip("Saved channels with their new video counts. (Alt+F)")
+        favorites_btn.Bind(wx.EVT_BUTTON, self.open_favorites)
+        top_bar.Add(favorites_btn, 0, wx.ALL, 5)
+        # Kept so startup can hold them unavailable for a moment; see the
+        # end of __init__.
+        self._top_buttons = [settings_btn, about_btn, help_btn, favorites_btn]
         main_sizer.Add(top_bar, 0, wx.EXPAND | wx.ALL, 5)
+
+        # On-screen notices. When no screen reader is running, messages
+        # that a screen reader would have spoken appear here instead.
+        self.notice_ctrl = wx.StaticText(panel, label="")
+        notice_font = self.notice_ctrl.GetFont()
+        notice_font.MakeBold()
+        self.notice_ctrl.SetFont(notice_font)
+        main_sizer.Add(self.notice_ctrl, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 15)
 
         # 1. Search Section
         search_box = wx.StaticBox(panel, label="Search or Paste a URL (Control+F)")
@@ -1454,6 +1494,7 @@ class AccessibleDownloaderFrame(wx.Frame):
             "Channel and playlist links open a download confirmation instead of a search."
         )
         self.search_input.Bind(wx.EVT_TEXT_ENTER, self.on_perform_search)
+        self.search_input.Bind(wx.EVT_CHAR_HOOK, self.on_search_key_down)
         search_sizer.Add(self.search_input, 1, wx.EXPAND | wx.ALL, 5)
 
         search_btn = wx.Button(search_box, label="Search")
@@ -1467,8 +1508,21 @@ class AccessibleDownloaderFrame(wx.Frame):
 
         main_sizer.Add(search_sizer, 0, wx.EXPAND | wx.ALL, 10)
 
+        # Download progress, shown only while a download runs. Screen
+        # reader users also hear progress every few seconds; without a
+        # screen reader this bar is the progress shown.
+        self.progress_label = wx.StaticText(panel, label="")
+        self.progress_gauge = wx.Gauge(panel, range=100)
+        self.progress_gauge.SetName("Download progress")
+        self.progress_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.progress_sizer.Add(self.progress_label, 0, wx.EXPAND | wx.BOTTOM, 4)
+        self.progress_sizer.Add(self.progress_gauge, 0, wx.EXPAND)
+        main_sizer.Add(self.progress_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 15)
+        main_sizer.Hide(self.progress_sizer)
+
         # 2. Results List View Section
         self.results_box = wx.StaticBox(panel, label="Search Results (Arrow Keys, Enter to Play, Escape to Close)")
+        self._results_label_default = self.results_box.GetLabel()
         results_sizer = wx.StaticBoxSizer(self.results_box, wx.VERTICAL)
 
         self.results_list = wx.ListCtrl(self.results_box, style=wx.LC_REPORT | wx.BORDER_SUNKEN)
@@ -1564,6 +1618,7 @@ class AccessibleDownloaderFrame(wx.Frame):
             wx.AcceleratorEntry(wx.ACCEL_CTRL | wx.ACCEL_SHIFT, ord('O'), self.ID_HOTKEY_OPEN_BROWSER),
             wx.AcceleratorEntry(wx.ACCEL_CTRL | wx.ACCEL_SHIFT, ord('V'), self.ID_HOTKEY_PLAY_VIDEO),
             wx.AcceleratorEntry(wx.ACCEL_ALT, ord('H'), self.ID_HOTKEY_HELP),
+            wx.AcceleratorEntry(wx.ACCEL_ALT, ord('F'), self.ID_HOTKEY_FAVORITES),
         ]
         self.SetAcceleratorTable(wx.AcceleratorTable(accel_entries))
         self.Bind(wx.EVT_MENU, self.focus_search_box, id=self.ID_HOTKEY_SEARCH)
@@ -1577,6 +1632,7 @@ class AccessibleDownloaderFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_hotkey_open_browser, id=self.ID_HOTKEY_OPEN_BROWSER)
         self.Bind(wx.EVT_MENU, self.on_hotkey_play_video, id=self.ID_HOTKEY_PLAY_VIDEO)
         self.Bind(wx.EVT_MENU, self.open_help, id=self.ID_HOTKEY_HELP)
+        self.Bind(wx.EVT_MENU, self.open_favorites, id=self.ID_HOTKEY_FAVORITES)
 
         self.results_list.Bind(wx.EVT_CHAR_HOOK, self.on_results_list_key_down)
 
@@ -1584,19 +1640,29 @@ class AccessibleDownloaderFrame(wx.Frame):
         self.Bind(wx.EVT_ACTIVATE, self.on_activate)
 
         self.Centre()
+        # The window must open with focus in the search box, never on the
+        # first button: otherwise the screen reader says "Settings &
+        # Preferences, button" before anything else. Windows gives a new
+        # window's focus to its first available control, so the four top
+        # buttons are unavailable while the window opens and focus is put
+        # in the search box at once. They become available again with the
+        # native focus step below, a fraction of a second later.
+        for button in self._top_buttons:
+            button.Disable()
         self.Show()
+        self.search_input.SetFocus()
         # Audible launch cue, on every startup, independent of any spoken
         # announcement -- plays regardless of whether a screen reader is
         # active.
         play_sound(SOUND_SYSTEM_READY)
-        # Strictly native focus announcement: keyboard focus is moved to
-        # the search box a beat AFTER the window has fully appeared, so
-        # the screen reader's own focus cursor announces it natively as
-        # "Search or paste a URL, edit". No SAPI5 voice speaks at startup
-        # -- a second voice can be mistaken for another application while
-        # the user is multitasking, and any key pressed in response would
-        # go to whatever window really has focus, not to this search box.
+        # A beat after the window has fully appeared, focus is set again
+        # the keyboard way, so the screen reader announces it natively as
+        # "Search or paste a URL, edit", and the buttons come back.
         wx.CallLater(400, self._focus_search_box_native)
+        # Then the screen reader output is built, and only after that the
+        # welcome is scheduled, so it always follows the search box
+        # announcement. See _startup_speech.
+        wx.CallLater(700, self._startup_speech)
         self.log_message("Application initialized. Press Control+F to focus search, Alt+S for settings.")
 
     def on_close(self, event):
@@ -1663,30 +1729,43 @@ class AccessibleDownloaderFrame(wx.Frame):
         self._write_to_debug_file(message)
 
     def announce(self, message):
-        """Speak a message aloud through Windows' built-in speech voice.
-        This is always audible even when NVDA/JAWS do not announce status
-        bar text. Queued on a background thread and never blocks the UI."""
-        speaker = getattr(self, 'speaker', None)
-        if speaker is None:
+        """Hands a message to the running screen reader, the way ZBox does
+        (see screen_reader.py). When no screen reader is running it is
+        shown on screen instead; Media Tug has no voice of its own. Safe
+        to call from any thread."""
+        wx.CallAfter(self._deliver_announcement, message)
+
+    def _deliver_announcement(self, message):
+        if screen_reader.speak(message, interrupt=True):
             return
+        self.show_notice(message)
+
+    def show_notice(self, message):
+        """Visual form of an announcement: bold text under the buttons,
+        cleared after ten seconds unless another notice replaces it."""
         try:
-            speaker.speak(message)
+            self.notice_ctrl.SetLabel(message)
+            self.notice_ctrl.Wrap(max(200, self.GetClientSize().width - 40))
+            self.main_sizer.Layout()
+            if self._notice_timer is not None:
+                self._notice_timer.Stop()
+            self._notice_timer = wx.CallLater(10000, self._clear_notice)
+        except Exception:
+            pass
+
+    def _clear_notice(self):
+        self._notice_timer = None
+        try:
+            self.notice_ctrl.SetLabel("")
+            self.main_sizer.Layout()
         except Exception:
             pass
 
     def screen_reader_alert(self, message):
-        """Speaks `message` aloud via the same SAPI5 voice used for every
-        other announcement in this app (see announce()), but ONLY when
-        Windows reports a screen reader is actually running (see the
-        module-level is_screen_reader_active()). A sighted user with no
-        screen reader active hears nothing. Two earlier approaches -- a
-        raw EVENT_SYSTEM_ALERT MSAA event, then a focus-flash onto a
-        hidden control -- were both tried first and neither was picked up
-        reliably by JAWS in practice, so this reuses the one mechanism
-        already confirmed to work for every other spoken message."""
-        if not is_screen_reader_active():
-            return
-        self.announce(message)
+        """Says message through the running screen reader only, without
+        interrupting what it is saying. Nothing is spoken or shown when no
+        screen reader is running."""
+        wx.CallAfter(screen_reader.speak, message, False)
 
     def _focus_search_box_native(self):
         """Moves keyboard focus to the search box a beat after the window
@@ -1699,9 +1778,25 @@ class AccessibleDownloaderFrame(wx.Frame):
         be mistaken for another application, and any key pressed in
         response would go to whatever window really has focus."""
         try:
+            for button in getattr(self, '_top_buttons', []):
+                button.Enable()
+        except Exception:
+            pass
+        try:
             self.search_input.SetFocusFromKbd()
         except Exception:
             self.search_input.SetFocus()
+
+    def _startup_speech(self):
+        """Builds the screen reader output now rather than on the first
+        announcement, which could otherwise stall the window mid-action,
+        then schedules the welcome for after it. The welcome waits for the
+        reader to finish the search box announcement instead of cutting
+        it off. Screen reader only: nothing is shown or spoken when no
+        reader is running. "Harrith" is spelled that way on purpose, so
+        voices pronounce the name right."""
+        screen_reader.warm_up()
+        wx.CallLater(1200, self.screen_reader_alert, "Harrith Welcomes You")
 
     def log_and_announce(self, message):
         """Record a message in the log and speak it aloud at the same time."""
@@ -1731,6 +1826,73 @@ class AccessibleDownloaderFrame(wx.Frame):
 
     def focus_search_box(self, event):
         self.search_input.SetFocus()
+
+    # -- favorite channels ----------------------------------------------------
+
+    def open_favorites(self, event=None):
+        previous = wx.Window.FindFocus()
+        dlg = favorite_channels.FavoriteChannelsDialog(
+            self, self.favorites, self.fetch_channel_page, self.log_and_announce)
+        result = dlg.ShowModal()
+        channel = dlg.selected_channel
+        dlg.Destroy()
+        if result == wx.ID_OK and channel:
+            self.open_favorite_channel(channel)
+        elif previous:
+            try:
+                previous.SetFocus()
+            except RuntimeError:
+                self.search_input.SetFocus()
+
+    def fetch_channel_page(self, url, count):
+        """The info dict of a channel's Videos page, newest first, limited
+        to count entries. Worker thread only. Uses the same cookie setup
+        as search, and retries once without cookies if that fails."""
+        base_opts = {'extract_flat': True, 'playlistend': count,
+                     'quiet': True, 'no_warnings': True}
+        _cookie_label, cookie_opts = self.resolve_cookie_config(base_opts)
+        attempts = [dict(base_opts, **cookie_opts)]
+        if cookie_opts:
+            attempts.append(dict(base_opts))
+        last_error = None
+        for ydl_opts in attempts:
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                if info:
+                    return info
+            except Exception as e:
+                last_error = e
+        if last_error:
+            raise last_error
+        return {}
+
+    def open_favorite_channel(self, channel):
+        self.log_and_announce(f"Loading videos from {channel.get('name', 'the channel')}.")
+        threading.Thread(target=self._load_channel_worker, args=(channel,), daemon=True).start()
+
+    def _load_channel_worker(self, channel):
+        try:
+            info = self.fetch_channel_page(favorite_channels.videos_url(channel['url']),
+                                           favorite_channels.CHECK_COUNT)
+            entries = [e for e in (info.get('entries') or []) if e]
+            wx.CallAfter(self._show_channel_videos, channel, entries)
+        except Exception as e:
+            self.log_and_announce(f"Could not load the channel: {str(e)}")
+
+    def _show_channel_videos(self, channel, entries):
+        """Fills the results list with a channel's videos, newest first.
+        Everything else works as for search results: Enter plays, the
+        context menu downloads, Down Arrow on the last item loads more."""
+        self.current_channel = channel
+        self.current_search_query = ''
+        self.search_is_extensible = False
+        self.current_result_count = favorite_channels.CHECK_COUNT
+        name = channel.get('name', 'Channel')
+        self.results_box.SetLabel(f"Videos from {name}, newest first (Arrow Keys, Enter to Play, Escape to Close)")
+        self.populate_list_ui(entries)
+        self.favorites.mark_opened(channel, entries)
+        self.log_message(f"Showing {len(entries)} videos from {name}, newest first.")
 
     def on_clear_search(self, event):
         """Clears search input text and redirects focus."""
@@ -1866,6 +2028,8 @@ class AccessibleDownloaderFrame(wx.Frame):
             self.show_playlist_download_popup(query)
             return
 
+        self.current_channel = None
+        self.results_box.SetLabel(self._results_label_default)
         self.current_search_query = query
         self.search_is_extensible = not query.startswith("http")
         self.current_result_count = 10
@@ -1961,6 +2125,8 @@ class AccessibleDownloaderFrame(wx.Frame):
         self.main_sizer.Layout()
         self.results_list.DeleteAllItems()
         self.search_results_data.clear()
+        # A Load more still running for the previous list is dropped.
+        self._results_generation += 1
 
         for idx, entry in enumerate(entries):
             title = entry.get('title', 'Unknown Title')
@@ -2202,7 +2368,9 @@ class AccessibleDownloaderFrame(wx.Frame):
             if as_video:
                 fmt = 'best[height<=480]/best'
             else:
-                fmt = 'bestaudio/best'
+                # Skips the few very large audio streams; YouTube's usual
+                # 128 to 160 kbps stream is picked, which downloads fastest.
+                fmt = 'bestaudio[abr<=?160]/bestaudio/best'
 
             base_opts = {
                 'format': fmt,
@@ -2220,10 +2388,19 @@ class AccessibleDownloaderFrame(wx.Frame):
                 'socket_timeout': 20,
                 'continuedl': True,
                 'progress_hooks': [_cancel_check],
+                # The lookup skips YouTube's live-stream variant list, which
+                # playback never uses: measured on 30 September 2026 it
+                # halves the lookup, about 2.2 s down to 1.1 s. Only the
+                # first, default client attempt uses this; the fallback
+                # clients in _attempt_client_downloads set their own
+                # extractor_args, so a video offered only as a live-stream
+                # list still plays through them.
+                'extractor_args': {'youtube': {'skip': ['hls']}},
                 # NOTE: do not pass 'impersonate' as a plain string here; on
                 # this yt-dlp version that raises AssertionError at YoutubeDL
                 # construction time (it expects an ImpersonateTarget object).
             }
+            self._apply_speed_options(base_opts)
 
             if cancel_event.is_set():
                 raise _PlaybackCancelled()
@@ -2332,13 +2509,15 @@ class AccessibleDownloaderFrame(wx.Frame):
                 'fragment_retries': 10,
                 'socket_timeout': 20,
                 'continuedl': True,
+                'extractor_args': {'youtube': {'skip': ['hls']}},
             }
+            self._apply_speed_options(ydl_opts)
             # The video fetch has no Escape-cancel (unlike playback), so
             # the bundled aria2c can safely parallelize it into 16
             # connections -- the 66 MiB "format 18" download from the
             # logs gets several times faster on YouTube's per-connection
             # throttled CDN. Harmless no-op when aria2c is not bundled.
-            self._apply_external_downloader(ydl_opts)
+            self._apply_external_downloader(ydl_opts, page_url)
             cookie_label, cookie_opts = self.resolve_cookie_config(ydl_opts)
             # Cookies are applied per attempt inside _attempt_client_downloads,
             # which also retries once without them if every client attempt
@@ -2456,15 +2635,13 @@ class AccessibleDownloaderFrame(wx.Frame):
     # -- context menu / downloads ---------------------------------------------
 
     def on_results_list_key_down(self, event):
-        """Escape closes the results panel, same pattern as the player
-        window. Arrow-Down while on the last item loads 10 more results
-        automatically, so the list keeps extending as you scroll rather
-        than hard-capping at the first batch."""
+        """Escape clears and closes the results list (see clear_results).
+        Arrow-Down while on the last item loads more automatically, so the
+        list keeps extending as you scroll rather than hard-capping at the
+        first batch."""
         keycode = event.GetKeyCode()
         if keycode == wx.WXK_ESCAPE:
-            self.main_sizer.Hide(self.results_sizer)
-            self.main_sizer.Layout()
-            self.search_input.SetFocus()
+            self.clear_results()
         elif keycode == wx.WXK_DOWN:
             count = self.results_list.GetItemCount()
             if count > 0 and self.results_list.GetFocusedItem() == count - 1:
@@ -2473,22 +2650,59 @@ class AccessibleDownloaderFrame(wx.Frame):
         else:
             event.Skip()
 
+    def on_search_key_down(self, event):
+        """Escape in the search box clears the results list while one is
+        showing; otherwise the key does what it did before."""
+        if event.GetKeyCode() == wx.WXK_ESCAPE and (
+                self.results_list.GetItemCount() > 0 or self.main_sizer.IsShown(self.results_sizer)):
+            self.clear_results()
+            return
+        event.Skip()
+
+    def clear_results(self):
+        """Empties and hides the results list, returns its title to Search
+        Results, ends the Favorite Channels video view, and puts focus in
+        the search box, which the screen reader then announces."""
+        self._results_generation += 1
+        self.results_list.DeleteAllItems()
+        self.search_results_data.clear()
+        self.current_channel = None
+        self.current_search_query = ''
+        self.search_is_extensible = False
+        self.results_box.SetLabel(self._results_label_default)
+        self.main_sizer.Hide(self.results_sizer)
+        self.main_sizer.Layout()
+        self.search_input.SetFocus()
+        self.log_message("Results cleared.")
+
     def load_more_results(self):
-        if self.loading_more or not self.search_is_extensible:
+        if self.loading_more or not (self.search_is_extensible or self.current_channel):
             return
         self.loading_more = True
-        self.current_result_count += 10
-        threading.Thread(target=self._fetch_more_results, daemon=True).start()
+        self.current_result_count += favorite_channels.CHECK_COUNT if self.current_channel else 10
+        threading.Thread(target=self._fetch_more_results, args=(self._results_generation,),
+                         daemon=True).start()
 
-    def _fetch_more_results(self):
+    def _fetch_more_results(self, generation=None):
         try:
-            search_target = f"ytsearch{self.current_result_count}:{self.current_search_query}"
-            entries = self._perform_yt_search(search_target)
-            wx.CallAfter(self.append_more_results, entries)
+            if self.current_channel:
+                info = self.fetch_channel_page(favorite_channels.videos_url(self.current_channel['url']),
+                                               self.current_result_count)
+                entries = [e for e in (info.get('entries') or []) if e]
+            else:
+                search_target = f"ytsearch{self.current_result_count}:{self.current_search_query}"
+                entries = self._perform_yt_search(search_target)
+            wx.CallAfter(self._append_if_current, generation, entries)
         except Exception as e:
             wx.CallAfter(self.log_message, f"Load more failed: {str(e)}")
         finally:
             self.loading_more = False
+
+    def _append_if_current(self, generation, entries):
+        """Drops a Load more that finished after the list was cleared."""
+        if generation is not None and generation != self._results_generation:
+            return
+        self.append_more_results(entries)
 
     def append_more_results(self, entries):
         existing_count = self.results_list.GetItemCount()
@@ -2534,8 +2748,8 @@ class AccessibleDownloaderFrame(wx.Frame):
             email_id = wx.NewIdRef()
 
             menu.Append(play_id, "Play Video\tEnter")
-            menu.Append(dl_vid_id, "Download Video (MP4)")
-            menu.Append(dl_aud_id, "Download Audio (MP3)")
+            menu.Append(dl_vid_id, f"Download Video ({download_formats.video_label(self.app_config)})")
+            menu.Append(dl_aud_id, f"Download Audio ({download_formats.audio_label(self.app_config)})")
             menu.AppendSeparator()
             menu.Append(browser_id, "Open in Web Browser")
             menu.Append(copy_id, "Copy URL to Clipboard")
@@ -2548,8 +2762,8 @@ class AccessibleDownloaderFrame(wx.Frame):
             self.Bind(wx.EVT_MENU, lambda evt: self.copy_url_to_clipboard(selected_index), copy_id)
             self.Bind(wx.EVT_MENU, lambda evt: self.send_url_by_email(selected_index), email_id)
         else:
-            m_mp3 = menu.Append(wx.ID_ANY, f"Download Selected as MP3 ({count})")
-            m_mp4 = menu.Append(wx.ID_ANY, f"Download Selected as MP4 ({count})")
+            m_mp3 = menu.Append(wx.ID_ANY, f"Download Selected as {download_formats.audio_label(self.app_config)} ({count})")
+            m_mp4 = menu.Append(wx.ID_ANY, f"Download Selected as {download_formats.video_label(self.app_config)} ({count})")
             self.Bind(wx.EVT_MENU, lambda evt: self.batch_download(selected_indices, is_audio=True), m_mp3)
             self.Bind(wx.EVT_MENU, lambda evt: self.batch_download(selected_indices, is_audio=False), m_mp4)
 
@@ -2639,7 +2853,7 @@ class AccessibleDownloaderFrame(wx.Frame):
                 )
                 return
             archive_path = os.path.join(playlists_dir, 'download_archive.txt')
-            is_audio = self.app_config.get('download_format', 'MP3 Audio') == 'MP3 Audio'
+            is_audio = self._is_audio_download()
 
             ydl_opts = {
                 'outtmpl': os.path.join(playlists_dir, '%(playlist_title|channel)s/%(playlist_index)03d - %(title)s.%(ext)s'),
@@ -2651,52 +2865,86 @@ class AccessibleDownloaderFrame(wx.Frame):
                 'continuedl': True,
                 'progress_hooks': [self.ytdl_hook],
                 'logger': YtdlpLoggerBridge(self.debug_message),
+                'ffmpeg_location': self.get_ffmpeg_path(),
             }
 
             cookie_label, cookie_opts = self.resolve_cookie_config(ydl_opts)
             wx.CallAfter(self.debug_message, f"Channel download using cookie source: {cookie_label}")
             ydl_opts.update(cookie_opts)
 
-            if is_audio:
-                ydl_opts.update({
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': self.get_audio_bitrate(),
-                    }],
-                })
-            else:
-                ydl_opts.update({'format': self.get_video_format_string()})
+            download_formats.apply_download_format(ydl_opts, self.app_config, is_audio,
+                                                   embed_metadata=False)
+            self._apply_speed_options(ydl_opts)
 
             # aria2c parallelizes every video in the batch; same trade-off
             # as single downloads (no per-file % progress spoken while
             # aria2c runs) for much higher throughput on a channel-length
             # run, where speed matters most.
-            self._apply_external_downloader(ydl_opts)
+            self._apply_external_downloader(ydl_opts, url)
 
-            with YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            self._download_started()
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+            finally:
+                self._download_ended()
 
             self.log_and_announce(f"Channel/playlist download complete: {playlists_dir}")
         except Exception as e:
             self.log_and_announce(f"Channel download error: {str(e)}")
             self.debug_message("Traceback:\n" + traceback.format_exc())
 
-    def get_audio_bitrate(self):
-        audio_quality_str = self.app_config.get('audio_quality', '192 kbps (High)')
-        if "128" in audio_quality_str:
-            return "128"
-        if "320" in audio_quality_str:
-            return "320"
-        return "192"
+    def _apply_speed_options(self, ydl_opts):
+        """yt-dlp's own speed settings, used by every download and by
+        playback. Up to 8 pieces at once for videos delivered in pieces
+        (DASH and HLS), which aria2c does not cover. And 10 MB requests
+        instead of one long one, which avoids YouTube slowing a single
+        connection down to playback speed; this is what keeps playback
+        downloads fast while still letting Escape cancel them. aria2c,
+        when used, ignores the second and uses its own 16 connections."""
+        ydl_opts.setdefault('concurrent_fragment_downloads', 8)
+        ydl_opts.setdefault('http_chunk_size', 10 * 1024 * 1024)
+        # Progress reaches the app through progress_hooks, which still run.
+        # Without these, yt-dlp also wrote every progress line, with colour
+        # codes, into the debug log: about 60 lines per play.
+        ydl_opts.setdefault('noprogress', True)
+        ydl_opts.setdefault('color', {'stdout': 'no_color', 'stderr': 'no_color'})
 
-    def get_video_format_string(self):
-        height_caps = {'1080p': 1080, '720p': 720, '480p': 480, '360p': 360}
-        cap = height_caps.get(self.app_config.get('video_quality', 'Best available'))
-        if cap:
-            return f'bestvideo[height<={cap}]+bestaudio/best[height<={cap}]'
-        return 'bestvideo+bestaudio/best'
+    def _download_started(self):
+        with self._downloads_lock:
+            self._active_downloads += 1
+
+    def _download_ended(self):
+        with self._downloads_lock:
+            self._active_downloads = max(0, self._active_downloads - 1)
+            idle = self._active_downloads == 0
+        if idle:
+            wx.CallAfter(self._hide_progress)
+
+    def _show_progress(self, percent, text):
+        """Main thread. percent None means the size is unknown, so the bar
+        moves back and forth instead."""
+        try:
+            if not self.main_sizer.IsShown(self.progress_sizer):
+                self.main_sizer.Show(self.progress_sizer)
+                self.main_sizer.Layout()
+            self.progress_label.SetLabel(text)
+            if percent is None:
+                self.progress_gauge.Pulse()
+            else:
+                self.progress_gauge.SetValue(max(0, min(100, int(percent))))
+        except Exception:
+            pass
+
+    def _hide_progress(self):
+        try:
+            if self.main_sizer.IsShown(self.progress_sizer):
+                self.progress_gauge.SetValue(0)
+                self.progress_label.SetLabel("")
+                self.main_sizer.Hide(self.progress_sizer)
+                self.main_sizer.Layout()
+        except Exception:
+            pass
 
     def get_ffmpeg_path(self):
         """Locates bundled FFmpeg binary relative to root or app directory."""
@@ -2734,7 +2982,7 @@ class AccessibleDownloaderFrame(wx.Frame):
                 return deps_aria2_path
         return None
 
-    def _apply_external_downloader(self, ydl_opts):
+    def _apply_external_downloader(self, ydl_opts, url=None):
         """Speeds up non-playback downloads (save-to-disk, channel/
         playlist, and the Ctrl+Shift+V video fetch) with the bundled
         aria2c when it is present: aria2c opens up to 16 parallel
@@ -2747,7 +2995,14 @@ class AccessibleDownloaderFrame(wx.Frame):
         progress hooks, which external downloaders do not fire mid-
         transfer. If no aria2c is bundled, opts are left untouched and
         yt-dlp's own single-connection downloader is used, so nothing
-        breaks either way."""
+        breaks either way.
+
+        Not used for YouTube links: measured on 30 September 2026, aria2c
+        fetched a 15 MB file there at 1.5 MB/s, while yt-dlp's own
+        downloader in 10 MB parts (see _apply_speed_options) ran at 11 to
+        60 MB/s. Other sites still get aria2c."""
+        if url and re.search(r'(^|[/.])(youtube\.com|youtu\.be|youtube-nocookie\.com)(/|$)', url, re.IGNORECASE):
+            return
         aria2c = self.get_aria2c_path()
         if not aria2c:
             return
@@ -2768,7 +3023,7 @@ class AccessibleDownloaderFrame(wx.Frame):
                      "Using aria2c (16 parallel connections) for a faster download.")
 
     def _is_audio_download(self):
-        return self.app_config.get('download_format', 'MP3 Audio') == 'MP3 Audio'
+        return self.app_config.get('download_format', 'Audio') == 'Audio'
 
     def download_url_in_background(self, url):
         """Queues a single URL for download using the configured format,
@@ -2803,7 +3058,6 @@ class AccessibleDownloaderFrame(wx.Frame):
             self.debug_message(f"Download folder unusable: {output_dir} ({probe_err})")
             return
         try:
-            bitrate = self.get_audio_bitrate()
             ffmpeg_bin = self.get_ffmpeg_path()
             outtmpl = os.path.join(output_dir, '%(title)s.%(ext)s')
 
@@ -2811,7 +3065,6 @@ class AccessibleDownloaderFrame(wx.Frame):
                 'outtmpl': outtmpl,
                 'progress_hooks': [self.ytdl_hook],
                 'ffmpeg_location': ffmpeg_bin,
-                'writethumbnail': True,
                 'logger': YtdlpLoggerBridge(self.debug_message),
                 'retries': 10,
                 'fragment_retries': 10,
@@ -2822,26 +3075,10 @@ class AccessibleDownloaderFrame(wx.Frame):
             cookie_label, cookie_opts = self.resolve_cookie_config(ydl_opts)
             ydl_opts.update(cookie_opts)
 
-            postprocessors = [{
-                'key': 'FFmpegMetadata',
-                'add_metadata': True,
-            }]
-
-            if is_audio:
-                ydl_opts.update({'format': 'bestaudio/best'})
-                postprocessors.extend([
-                    {
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': bitrate,
-                    },
-                    {'key': 'EmbedThumbnail'},
-                ])
-            else:
-                ydl_opts.update({'format': self.get_video_format_string()})
-                postprocessors.append({'key': 'EmbedThumbnail'})
-
-            ydl_opts['postprocessors'] = postprocessors
+            # File format, quality, conversion and thumbnail, as chosen in
+            # Settings and Advanced download options.
+            download_formats.apply_download_format(ydl_opts, self.app_config, is_audio)
+            self._apply_speed_options(ydl_opts)
 
             # Speed up save-to-disk downloads with the bundled aria2c
             # (16 parallel connections) when present; falls back to
@@ -2850,10 +3087,11 @@ class AccessibleDownloaderFrame(wx.Frame):
             # per-progress hooks, so the "Download progress: x%" spoken
             # updates pause until the transfer finishes -- the trade-off
             # for typically 3-8x faster throughput on throttled links.
-            self._apply_external_downloader(ydl_opts)
+            self._apply_external_downloader(ydl_opts, url)
 
             self._last_progress_announce = time.time()
             self.log_and_announce("Download started.")
+            self._download_started()
 
             # If the first attempt fails and cookies were in play, retry the
             # same download once without them, so a cookie issue (for example
@@ -2866,16 +3104,19 @@ class AccessibleDownloaderFrame(wx.Frame):
                 no_cookie_opts.pop('cookiefile', None)
                 attempt_opts_list.append(no_cookie_opts)
 
-            for attempt_index, attempt_opts in enumerate(attempt_opts_list):
-                try:
-                    with YoutubeDL(attempt_opts) as ydl:
-                        ydl.download([url])
-                    break
-                except Exception:
-                    if attempt_index == 0 and len(attempt_opts_list) > 1:
-                        self.log_message("Download attempt with cookies failed; retrying without cookies.")
-                        continue
-                    raise
+            try:
+                for attempt_index, attempt_opts in enumerate(attempt_opts_list):
+                    try:
+                        with YoutubeDL(attempt_opts) as ydl:
+                            ydl.download([url])
+                        break
+                    except Exception:
+                        if attempt_index == 0 and len(attempt_opts_list) > 1:
+                            self.log_message("Download attempt with cookies failed; retrying without cookies.")
+                            continue
+                        raise
+            finally:
+                self._download_ended()
 
             self.log_and_announce("Download finished successfully.")
             self.log_message(f"Saved to {output_dir}")
@@ -2884,14 +3125,30 @@ class AccessibleDownloaderFrame(wx.Frame):
             self.debug_message("Traceback:\n" + traceback.format_exc())
 
     def ytdl_hook(self, d):
-        if d['status'] == 'downloading':
-            percent = d.get('_percent_str', '0%').strip()
-            eta = d.get('_eta_str', 'unknown')
+        """Runs on the download thread. Feeds the progress bar, and every
+        five seconds hands a progress update to the screen reader. Without
+        a screen reader the bar is the progress shown, instead of repeated
+        notices."""
+        status = d.get('status')
+        if status == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate')
+            done = d.get('downloaded_bytes') or 0
+            fraction = (done * 100.0 / total) if total else None
+            percent = re.sub(r'\x1b\[[0-9;]*m', '', d.get('_percent_str') or '').strip()
+            if not percent and fraction is not None:
+                percent = f"{fraction:.0f}%"
+            eta = re.sub(r'\x1b\[[0-9;]*m', '', d.get('_eta_str') or '').strip() or 'unknown'
             now = time.time()
-            last = getattr(self, '_last_progress_announce', 0.0)
-            if now - last >= 5:
+            if now - getattr(self, '_last_progress_ui', 0.0) >= 0.3:
+                self._last_progress_ui = now
+                wx.CallAfter(self._show_progress, fraction, f"Downloading {percent or '...'}, time left {eta}")
+            if now - getattr(self, '_last_progress_announce', 0.0) >= 5:
                 self._last_progress_announce = now
-                self.log_and_announce(f"Download progress: {percent} | ETA: {eta}")
+                text = f"Download progress: {percent or 'unknown'} | ETA: {eta}"
+                self.log_message(text)
+                wx.CallAfter(screen_reader.speak, text, True)
+        elif status == 'finished':
+            wx.CallAfter(self._show_progress, 100.0, "Downloaded. Finishing the file...")
 
 
 if __name__ == '__main__':

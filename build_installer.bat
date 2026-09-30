@@ -10,7 +10,7 @@ rem            this script relies on (with a folder-search fallback
 rem            below in case that variable isn't visible yet).
 rem  Requires: build.bat already run, so release\MediaTug\app exists.
 rem
-rem  Every run also writes output.log next to this script, with a full
+rem  Every run also writes release\installer\output.log, with a full
 rem  copy of everything printed here plus heat.exe/candle.exe/light.exe's
 rem  own output -- so if something fails, the exact error text is saved
 rem  and can be reread or shared even after this window closes.
@@ -18,11 +18,15 @@ rem  Logging works by re-running this same file as a child process with
 rem  its output redirected to the log, then printing that log back out
 rem  here -- so you still see everything on screen as normal, it's just
 rem  also being saved.
+rem  Installer source lives in installer\. Everything this script
+rem  produces (the two harvested file lists, the .wixobj files, the
+rem  .msi and output.log) goes into release\installer\.
 rem ============================================================
 
 if "%~1"=="__child__" goto :main
 
-set "LOGFILE=%~dp0output.log"
+if not exist "%~dp0release\installer" mkdir "%~dp0release\installer"
+set "LOGFILE=%~dp0release\installer\output.log"
 call "%~f0" __child__ > "%LOGFILE%" 2>&1
 set "RESULT=%ERRORLEVEL%"
 
@@ -38,6 +42,10 @@ exit /b %RESULT%
 
 :main
 set "EXITCODE=0"
+pushd "%~dp0"
+set "SRCDIR=installer"
+set "OUTDIR=release\installer"
+if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 
 rem ============================================================
 rem  Locate WiX Toolset v3.
@@ -106,7 +114,7 @@ if not exist "%TOOLSDIR%\ffmpeg.exe" (
     echo        build.bat's ffmpeg fetch step did not complete successfully --
     echo        re-run build.bat and check its Step 6 output before packaging
     echo        an installer that would otherwise ship with no working
-    echo        downloads ^(see fetch_ffmpeg.py^).
+    echo        downloads ^(see tools\fetch_ffmpeg.py^).
     set "EXITCODE=1"
     goto :end
 )
@@ -126,7 +134,7 @@ rem install got an empty tools\ folder and downloads silently failed.
     -gg -scom -sreg -sfrag -srd ^
     -dr APPFOLDER ^
     -var var.AppSourceDir ^
-    -out AppFiles.wxs
+    -out "%OUTDIR%\AppFiles.wxs"
 if errorlevel 1 (
     echo HEAT FAILED ^(app\^). See errors above.
     set "EXITCODE=1"
@@ -137,7 +145,7 @@ if errorlevel 1 (
     -gg -scom -sreg -sfrag -srd ^
     -dr TOOLSFOLDER ^
     -var var.ToolsSourceDir ^
-    -out ToolsFiles.wxs
+    -out "%OUTDIR%\ToolsFiles.wxs"
 if errorlevel 1 (
     echo HEAT FAILED ^(tools\^). See errors above.
     set "EXITCODE=1"
@@ -149,7 +157,9 @@ echo === Step 2: Compiling ===
 "%WIXBIN%candle.exe" -ext WixUIExtension -ext WixUtilExtension ^
     -dAppSourceDir="%APPDIR%" ^
     -dToolsSourceDir="%TOOLSDIR%" ^
-    installer.wxs AppFiles.wxs ToolsFiles.wxs
+    -dInstallerDir="%~dp0installer" ^
+    -out %OUTDIR%\ ^
+    "%SRCDIR%\installer.wxs" "%OUTDIR%\AppFiles.wxs" "%OUTDIR%\ToolsFiles.wxs"
 if errorlevel 1 (
     echo CANDLE FAILED. See errors above.
     set "EXITCODE=1"
@@ -163,10 +173,10 @@ rem are common false positives specifically for per-user installs that
 rem target a custom folder outside Program Files -- they do not indicate
 rem a real problem with this installer.
 "%WIXBIN%light.exe" -ext WixUIExtension -ext WixUtilExtension ^
-    -loc CustomStrings.wxl ^
+    -loc "%SRCDIR%\CustomStrings.wxl" ^
     -sice:ICE80 -sice:ICE64 -sice:ICE91 ^
-    -out MediaTugSetup.msi ^
-    installer.wixobj AppFiles.wixobj ToolsFiles.wixobj
+    -out "%OUTDIR%\MediaTugSetup.msi" ^
+    "%OUTDIR%\installer.wixobj" "%OUTDIR%\AppFiles.wixobj" "%OUTDIR%\ToolsFiles.wixobj"
 if errorlevel 1 (
     echo LIGHT FAILED. See errors above.
     set "EXITCODE=1"
@@ -174,7 +184,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo === Done: MediaTugSetup.msi ===
+echo === Done: %OUTDIR%\MediaTugSetup.msi ===
 
 :end
+popd
 endlocal & exit /b %EXITCODE%

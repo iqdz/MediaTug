@@ -15,9 +15,10 @@ from the ground up for screen reader users (NVDA, JAWS, Narrator).
 
 Media Tug searches, plays, and downloads media from YouTube and the many
 other sites yt-dlp supports, through a flat, keyboard-driven wxPython
-interface with no custom graphics-heavy UI to confuse a screen reader. A
-live status bar acts as a live region, SAPI5 speech announces key events on
-a background thread, and short sound cues mark startup and search
+interface with no custom graphics-heavy UI to confuse a screen reader.
+Announcements go straight to the running screen reader, in the user's own
+voice and settings; without a screen reader they appear on screen, with a
+progress bar for downloads. Short sound cues mark startup and search
 completion.
 
 ## Key features
@@ -28,13 +29,17 @@ completion.
 - **Dedicated player window** — Space/Ctrl+P play-pause, Ctrl+M mute,
   arrow keys for volume/seek, Ctrl+Shift+V to pop out video for a sighted
   viewer, Ctrl+D/Ctrl+L to download/copy the currently playing track.
-- **Downloads** — save as MP3 (configurable bitrate) or video (configurable
-  quality); channel/playlist batch downloads with resume support.
+- **Downloads** — video as MP4, MKV, WebM, MOV or AVI, and audio as MP3,
+  M4A (AAC), Opus, OGG Vorbis, FLAC, WAV or ALAC, each with its own quality
+  choices, picked in Settings under Advanced download options;
+  channel/playlist batch downloads with resume support.
+- **Favorite Channels (Alt+F)** — saved channels with a count of new
+  videos since each was last opened; Enter lists a channel's videos
+  newest first, F5 checks them all.
 - **Fast downloads** — bundled aria2c parallelizes save-to-disk,
-  channel/playlist, and video-fetch downloads (up to 16 connections) to get
-  around YouTube's per-connection throttling; the play-now cache
-  intentionally keeps yt-dlp's own downloader so Escape-to-cancel keeps
-  working.
+  channel/playlist, and video-fetch downloads (up to 16 connections);
+  yt-dlp downloads up to 8 pieces at once and requests 10 MB parts, which
+  also keeps play-now downloads fast while Escape can still cancel them.
 - **Cookie support** — browser cookie auto-detection (Firefox, Edge,
   Chrome, Brave, Vivaldi, Opera) or a manual `cookies.txt`, with automatic
   retry without cookies on failure.
@@ -67,7 +72,7 @@ including hotkeys, folder layout, build steps, and versioning workflow.
 - `build.bat` — builds the portable `release\MediaTug\` folder (PyInstaller
   onedir build, plus bundled VLC/ffmpeg/aria2c). Copy the folder anywhere
   and run `app\media_tug.exe`.
-- `build_installer.bat` — builds `MediaTugSetup.msi` (requires WiX Toolset
+- `build_installer.bat` — builds `release\installer\MediaTugSetup.msi` (requires WiX Toolset
   v3). Run this after `build.bat`. Produces a per-user installer with no
   admin rights required.
 

@@ -20,17 +20,19 @@ downloader for Windows. It was designed with NVDA/JAWS users as the
 primary audience from the start, so it relies on:
 
   - Native wxWidgets controls (standard Windows dialogs and widgets)
-  - A live status bar that screen readers announce as a live region
-  - SAPI5 speech (System.Speech) for spoken announcements, queued on a
-    background thread so it never blocks the UI
+  - Spoken announcements handed straight to the running screen reader
+    (NVDA, JAWS and others) through accessible_output2, in the user's
+    own voice and settings; when no screen reader is running they are
+    shown on screen instead. Media Tug has no voice of its own.
   - Sound cues: system-ready.wav on startup and complete.wav when a
     search finishes
   - No custom graphics-heavy UI that could confuse a screen reader
 
-The app deliberately keeps startup quiet: it plays the system-ready
-cue and moves keyboard focus natively to the search box (announced by
-the screen reader itself). It does not speak a SAPI5 welcome line over
-the screen reader at startup.
+At startup the app plays the system-ready cue and moves keyboard focus
+natively to the search box, announced by the screen reader itself.
+About two seconds later a screen reader, if one is running, says
+"Harrith Welcomes You" (spelled that way so voices say the name right)
+without interrupting. Nothing is shown or spoken for it otherwise.
 
 --------------------------------------------------------
 2. Current feature state (1.0.0)
@@ -61,7 +63,15 @@ Player:
     separate window for sharing with a sighted person
 
 Downloads:
-  - Save as MP3 audio or video, with configurable quality
+  - Save as audio or video. Settings > Advanced download options picks
+    the video format (MP4, MKV, WebM, MOV, AVI) and its quality, and
+    the audio format (MP3, M4A (AAC), Opus, OGG Vorbis, FLAC, WAV,
+    ALAC) and its quality; every download after OK uses exactly those
+  - Fast by default: aria2c with 16 connections when present, yt-dlp
+    downloading up to 8 pieces at once in 10 MB parts, and formats
+    chosen so MP4, WebM, M4A and Opus need no re-encoding
+  - A progress bar under the search box shows each download; screen
+    reader users also hear progress every five seconds
   - Download folder, audio quality, video quality, skip seconds,
     volume step, cache retention and more are set in Settings (Alt+S)
   - aria2c (when present) speeds up save-to-disk/channel/video-fetch
@@ -74,6 +84,21 @@ Downloads:
     seconds
   - If a download attempt with cookies fails, it retries once without
     them automatically
+
+Favorite Channels (Alt+F, or the button after Help):
+  - A saved list of YouTube channels, each row reading the channel
+    name and how many new videos it has had since it was last opened
+    in Media Tug
+  - Focus starts in the list; one Tab reaches "Add a channel URL"
+    (focus starts there when the list is empty). Add opens an edit
+    field, already filled in when the clipboard holds a channel link
+  - Enter opens a channel: its videos fill the main results list,
+    newest first, and work like search results (Enter plays, the
+    context menu downloads, Down Arrow on the last item loads more).
+    Opening a channel resets its new video count
+  - F5 checks every channel for new videos; Delete removes a channel
+    after a confirmation; Escape closes
+  - Saved in data\favorite_channels.json
 
 Playback cache:
   - Play-now items are cached under data\playback_cache and pruned by
@@ -119,9 +144,12 @@ Help and About:
   Control+Shift+V   Play the selected item with video
   Alt+S             Open Settings & Preferences
   Alt+H             Open Help
+  Alt+F             Open Favorite Channels
   Shift+Alt+C       Clear the playback cache
   Enter             Play the selected result
-  Escape            Close results panel / player / dialog
+  Escape            Clear and close the results list (from the list, or
+                    from the search box while results show); close the
+                    player or a dialog
   Space / Ctrl+P    Play or pause (player)
   Ctrl+M            Mute (player)
   Up / Down Arrows  Volume (player)
@@ -133,25 +161,38 @@ Help and About:
 4. Folder layout
 --------------------------------------------------------
 Repo root (source):
-  media_tug.py              The whole application (single file)
+  media_tug.py              The main application
+  favorite_channels.py      Favorite Channels list, store and dialog
+  download_formats.py       Video/audio formats, qualities, yt-dlp
+                            options, Advanced download options dialog
+  screen_reader.py          Hands announcements to the running screen
+                            reader (accessible_output2)
   media_tug.spec            PyInstaller spec (builds app\ output)
   run.bat                   Dev launcher: checks/fetches deps, runs
                             media_tug.py with Python
   build.bat                 Builds the portable release folder
-  build_installer.bat       Builds MediaTugSetup.msi (needs WiX v3)
-  Generate-DebugList.bat    Dev helper: writes debug_directory_log.txt
+  build_installer.bat       Builds release\installer\MediaTugSetup.msi
+                            (needs WiX v3)
+  VERSION.txt               Current version number (1.0.0)
+  README.md                 Project overview
+  .gitignore                GitHub repo essentials filter
+
+tools\ (build helpers, called by run.bat and build.bat):
   sync_vlc.py               Fetches/version-checks the VLC engine
   fetch_ffmpeg.py           Fetches/version-checks ffmpeg builds
   fetch_aria2.py            Fetches/version-checks aria2c
   update_ytdlp.py           Fetches/version-checks yt-dlp nightly
+  update_description.bat    Updates the GitHub repository description
+
+installer\ (MSI source, used by build_installer.bat):
   installer.wxs             WiX source for the MSI installer
   CustomStrings.wxl         WiX localization overrides (Welcome text)
   License.rtf               Installer license text
+
+Other source folders:
   sounds\                   system-ready.wav, complete.wav
-  VERSION.txt               Current version number (1.0.0)
-  BUILD_README.md           Build & installer pipeline notes
   docs\MediaTug_documentation.txt   This file
-  .gitignore                GitHub repo essentials filter
+  docs\BUILD_README.md      Build & installer pipeline notes
 
 Generated / runtime folders (do not edit, never commit):
   libs\                     pip --target dev dependencies (wxPython,
@@ -166,9 +207,12 @@ Generated / runtime folders (do not edit, never commit):
                               app\     media_tug.exe + bundled files
                               tools\   ffmpeg.exe, ffprobe.exe, aria2c.exe
                               cookies\ data\ logs\
+  release\installer\        Everything build_installer.bat produces:
+                            AppFiles.wxs, ToolsFiles.wxs, *.wixobj,
+                            MediaTugSetup.msi, output.log
   data\                     media_tug_settings.json, playback_cache
   cookies\                  Browser cookie cache used by the app
-  logs\                     media_tug_debug.log, vlc_native.log
+  logs\                     run.log, media_tug_debug.log, vlc_native.log
   __pycache__\              Python bytecode cache
 
 --------------------------------------------------------
@@ -186,7 +230,7 @@ run.bat will:
     it to solve YouTube's playback challenge)
   - Launch media_tug.py
 
-Setup output is captured to run.log next to the script.
+Setup output is captured to logs\run.log.
 
 --------------------------------------------------------
 6. Building the portable app
@@ -221,9 +265,9 @@ exist.
 What it does:
   - harvests every file under release\MediaTug\app (AppFiles.wxs)
     and release\MediaTug\tools (ToolsFiles.wxs) with heat.exe
-  - compiles installer.wxs + the two fragments with candle.exe
-  - links MediaTugSetup.msi with light.exe
-  - saves full output to output.log
+  - compiles installer\installer.wxs + the two fragments with candle.exe
+  - links release\installer\MediaTugSetup.msi with light.exe
+  - saves full output to release\installer\output.log
 
 Installer behavior:
   - Per-user install; no admin rights needed
@@ -248,7 +292,7 @@ Installer behavior:
 - media_tug.py reads VERSION.txt at startup from next to the exe, from
   _internal\ (PyInstaller 6.x data layout), or from the portable root;
   if the file is missing it falls back to "unknown" and never crashes.
-- The MSI Version in installer.wxs must stay in sync manually (WiX
+- The MSI Version in installer\installer.wxs must stay in sync manually (WiX
   requires four parts, e.g. 1.0.0.0 for version 1.0.0).
 
 --------------------------------------------------------
@@ -298,24 +342,25 @@ Full license texts are available on each project's website.
 --------------------------------------------------------
 Tracked (repo essentials):
   media_tug.py, media_tug.spec, run.bat, build.bat,
-  build_installer.bat, Generate-DebugList.bat, sync_vlc.py,
-  fetch_ffmpeg.py, fetch_aria2.py, update_ytdlp.py, BUILD_README.md,
-  installer.wxs, CustomStrings.wxl, License.rtf, sounds\*.wav,
-  VERSION.txt, .gitignore, docs\MediaTug_documentation.txt
+  build_installer.bat, README.md, VERSION.txt, .gitignore,
+  tools\ (sync_vlc.py, fetch_ffmpeg.py, fetch_aria2.py,
+  update_ytdlp.py, update_description.bat),
+  installer\ (installer.wxs, CustomStrings.wxl, License.rtf),
+  sounds\*.wav, docs\MediaTug_documentation.txt, docs\BUILD_README.md
 
 Ignored:
   libs\, dependencies\, build\, dist\, release\, data\, cookies\,
-  logs\, __pycache__\, *.log, *.wixobj, *.wixpdb, *.msi,
+  logs\, scripts\, __pycache__\, *.log, *.wixobj, *.wixpdb, *.msi,
   AppFiles.wxs, ToolsFiles.wxs, debug_directory_log.txt, editor noise
 
 --------------------------------------------------------
 13. Before the first public release (reminders)
 --------------------------------------------------------
-  - installer.wxs GUIDs (UpgradeCode and Component GUIDs) are already
+  - installer\installer.wxs GUIDs (UpgradeCode and Component GUIDs) are already
     real and unique - just keep UpgradeCode stable across future
     versions so upgrades keep working.
   - GitHub repository URL on the About page is set to
     https://github.com/iqdz/MediaTug.
   - Verify contact/support links are what you want to ship.
   - Test the MSI with NVDA/JAWS exactly as the app is tested.
-  - Keep VERSION.txt and installer.wxs Version in sync.
+  - Keep VERSION.txt and installer\installer.wxs Version in sync.

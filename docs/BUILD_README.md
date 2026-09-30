@@ -28,8 +28,8 @@ the portable workflow changes.
   fixes a real bug: builds used to only work correctly for *downloads*
   on a machine that coincidentally already had ffmpeg on its PATH —
   everyone else's copy silently failed every download while playback
-  kept working fine. See `sync_vlc.py`/`fetch_ffmpeg.py`/
-  `update_ytdlp.py` for details.
+  kept working fine. See `tools\sync_vlc.py`/`tools\fetch_ffmpeg.py`/
+  `tools\update_ytdlp.py` for details.
   `dependencies\` is meant to be looked at, not just a hidden cache —
   drop files into any of its subfolders yourself (e.g. a manually
   downloaded/extracted ffmpeg build, if the automatic download ever hits
@@ -40,7 +40,7 @@ the portable workflow changes.
   actually available. A local VLC install is still used as an offline
   fallback if VideoLAN can't be reached; there's no equivalent ffmpeg
   fallback beyond what's already in `dependencies\ffmpeg\`.
-- `fetch_ffmpeg.py` needs `py7zr` to unpack Gyan.dev's "full" build
+- `tools\fetch_ffmpeg.py` needs `py7zr` to unpack Gyan.dev's "full" build
   (only offered as `.7z`) — it pip-installs this into your Python
   environment itself the first time it's needed. Build-time only;
   nothing about it ships in the frozen app.
@@ -81,13 +81,13 @@ build_installer.bat
 This harvests every file under both `release\MediaTug\app` and
 `release\MediaTug\tools` automatically (via `heat.exe`), so you never
 have to hand-maintain a file list as PyInstaller's output — or
-ffmpeg's — changes between builds. Produces `MediaTugSetup.msi`.
+ffmpeg's — changes between builds. Produces `release\installer\MediaTugSetup.msi`.
 (Older versions of this script only harvested `app\`, so every MSI
 install shipped with an empty `tools\` folder and no working ffmpeg —
 downloads failed for every MSI user regardless of what the portable
 build looked like on the developer's own machine. That's fixed now.)
 
-Every run also writes `output.log` next to this script, containing
+Every run also writes `release\installer\output.log`, containing
 everything printed to the window plus `heat.exe`/`candle.exe`/`light.exe`'s
 own diagnostic output. You still see all of it on screen as normal — it's
 just also saved, so if a build fails you can reread or share the exact
@@ -108,15 +108,15 @@ What installing it does:
   alone — same as removing a portable copy wouldn't touch a backed-up
   copy of your settings elsewhere.
 
-- The Welcome page's message is overridden in `CustomStrings.wxl` (a
+- The Welcome page's message is overridden in `installer\CustomStrings.wxl` (a
   small localization file `build_installer.bat` passes to `light.exe`
   via `-loc`). To change that text again later, edit the
   `WelcomeDlgDescription` string in that file — no need to touch
-  `installer.wxs` or redefine the dialog itself.
+  `installer\installer.wxs` or redefine the dialog itself.
 
 ## Before your first real release
 
-- `installer.wxs` has placeholder GUIDs for `UpgradeCode` and every
+- `installer\installer.wxs` has placeholder GUIDs for `UpgradeCode` and every
   `Component`. Keep `UpgradeCode` the same forever (it's how future
   versions recognize "this is an upgrade of the same app"), but replace
   each `Component`'s `Guid` with your own freshly generated one
@@ -125,7 +125,7 @@ What installing it does:
   the repo root (currently `1.0.0`). To bump the version, edit that one
   text file -- `build.bat` reads it, prints it, and copies it into the
   release folder so the built app states it in About. For MSI builds,
-  keep the `Version` in `installer.wxs` in sync (WiX wants four parts,
+  keep the `Version` in `installer\installer.wxs` in sync (WiX wants four parts,
   e.g. `1.0.0.0`).
 - Test the MSI itself with NVDA or JAWS running, the same way you'd test
   the app — the wizard should read exactly like any other Windows

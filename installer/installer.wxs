@@ -43,7 +43,7 @@
   <Product Id="*"
            Name="Media Tug"
            Language="1033"
-           Version="1.0.0.0"
+           Version="1.0.1.0"
            Manufacturer="Harith Alhamdani"
            UpgradeCode="2B67722B-F29E-4B91-8038-D8F09A1F79A8">
 
@@ -185,7 +185,7 @@
 
     <!-- ================= UI: Welcome -> Progress -> Finish ================= -->
     <UIRef Id="WixUI_Minimal" />
-    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.InstallerDir)\License.rtf" />
 
     <!-- Skip the License page entirely: Welcome's Next goes straight to
          the ready-to-install dialog, and that dialog's Back returns to

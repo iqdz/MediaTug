@@ -103,7 +103,7 @@ rem folder) rather than this environment's site-packages, so run.bat and
 rem build.bat share exactly one copy instead of two that could drift out
 rem of sync -- media_tug.spec adds this folder to PyInstaller's search
 rem path itself, so nothing else here needs to change to find it.
-python "%ROOT%update_ytdlp.py" --target "%DEPS%\yt-dlp"
+python "%ROOT%tools\update_ytdlp.py" --target "%DEPS%\yt-dlp"
 if errorlevel 1 (
     echo WARNING: could not verify/install yt-dlp before building.
     echo          The build will use whatever is currently in
@@ -148,9 +148,9 @@ if exist "%ProgramFiles(x86)%\VideoLAN\VLC\libvlc.dll" set VLC_DIR=%ProgramFiles
 
 set VLC_CACHE=%DEPS%\vlc
 if defined VLC_DIR (
-    python "%ROOT%sync_vlc.py" --source "!VLC_DIR!" --cache "%VLC_CACHE%" --dest "%RELEASE%\app"
+    python "%ROOT%tools\sync_vlc.py" --source "!VLC_DIR!" --cache "%VLC_CACHE%" --dest "%RELEASE%\app"
 ) else (
-    python "%ROOT%sync_vlc.py" --cache "%VLC_CACHE%" --dest "%RELEASE%\app"
+    python "%ROOT%tools\sync_vlc.py" --cache "%VLC_CACHE%" --dest "%RELEASE%\app"
 )
 if errorlevel 1 (
     echo WARNING: Could not fetch VLC from VideoLAN, no VLC install was found
@@ -173,7 +173,7 @@ rem the *build machine's* PATH, which meant a build only worked for
 rem downloads on machines that coincidentally already had ffmpeg
 rem installed -- everyone else got silent "Download failed" errors.
 set FFMPEG_CACHE=%DEPS%\ffmpeg
-python "%ROOT%fetch_ffmpeg.py" --cache "%FFMPEG_CACHE%" --target "%RELEASE%\tools"
+python "%ROOT%tools\fetch_ffmpeg.py" --cache "%FFMPEG_CACHE%" --target "%RELEASE%\tools"
 if errorlevel 1 (
     set FFMPEG_FOUND=0
     echo WARNING: Could not fetch ffmpeg, and there was no cached copy from
@@ -195,7 +195,7 @@ rem into up to 16 parallel connections -- YouTube throttles single
 rem connections hard. It is optional: without it the app still works,
 rem just slower, so a fetch failure only warns.
 set ARIA2_CACHE=%DEPS%\aria2
-python "%ROOT%fetch_aria2.py" --cache "%ARIA2_CACHE%" --target "%RELEASE%\tools"
+python "%ROOT%tools\fetch_aria2.py" --cache "%ARIA2_CACHE%" --target "%RELEASE%\tools"
 if errorlevel 1 (
     set ARIA2_FOUND=0
     echo WARNING: Could not fetch aria2c, and there was no cached copy from

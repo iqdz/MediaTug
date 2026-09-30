@@ -11,7 +11,7 @@ rem sync_vlc.py could still lag behind what's actually happening.
 set PYTHONUNBUFFERED=1
 
 rem The dependency-checking/fetching steps below are shown live AND
-rem captured to run.log next to this script (via PowerShell's
+rem captured to logs\run.log (via PowerShell's
 rem Tee-Object, if PowerShell is available -- it practically always is
 rem on Windows 7+), so a stall shows you exactly which step it's stuck
 rem on instead of a blank terminal, and there's still a saved copy to
@@ -19,7 +19,8 @@ rem reread or share afterward. Falls back to buffer-then-dump (log
 rem first, show after) if PowerShell isn't found. The actual app launch
 rem further below always stays live and un-redirected either way, since
 rem it's an interactive GUI, not something that benefits from logging.
-set "LOGFILE=%~dp0run.log"
+if not exist "%~dp0logs" mkdir "%~dp0logs"
+set "LOGFILE=%~dp0logs\run.log"
 where powershell >nul 2>nul
 if not errorlevel 1 (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Continue'; & '%~f0' __setup__ 2>&1 | Tee-Object -FilePath '%LOGFILE%'"
@@ -91,7 +92,7 @@ REM yt-dlp always runs on the nightly channel (YouTube changes its
 REM protections often and stable releases lag), but only actually
 REM downloads when a newer nightly exists.
 echo Checking yt-dlp nightly version ^(uses dependencies\yt-dlp\ as-is if it's already the latest^)...
-python "%~dp0update_ytdlp.py" --target "%DEPS%\yt-dlp"
+python "%~dp0tools\update_ytdlp.py" --target "%DEPS%\yt-dlp"
 if errorlevel 1 (
     echo Warning: could not verify/install yt-dlp automatically. Continuing with whatever is in dependencies\yt-dlp\, if anything.
 )
@@ -108,6 +109,22 @@ if errorlevel 1 (
     python -m pip install --target "%LIBS_DIR%" python-vlc
 )
 
+REM Screen reader announcements go through accessible_output2, the same
+REM library ZBox uses. Its JAWS support needs pywin32, which is installed
+REM into Python itself rather than libs\: pywin32 does not start up
+REM reliably from a pip --target folder, and the PyInstaller build needs
+REM it in the same Python that runs build.bat.
+python -c "import win32com.client" 2>nul
+if errorlevel 1 (
+    echo Installing pywin32 for screen reader announcements...
+    python -m pip install pywin32
+)
+python -c "import sys; sys.path.insert(0, r'%LIBS_DIR%'); import accessible_output2.outputs.auto" 2>nul
+if errorlevel 1 (
+    echo Installing accessible_output2 into libs\ for screen reader announcements...
+    python -m pip install --target "%LIBS_DIR%" --no-deps accessible_output2 libloader platform_utils
+)
+
 REM ffmpeg and the VLC engine itself (as opposed to the python-vlc
 REM bindings just above) are used directly from dependencies\ -- no
 REM separate copy is made in dev mode, since media_tug.py already knows
@@ -118,7 +135,7 @@ REM \app\, since those files need to be physically bundled with the
 REM shipped exe -- an end user's machine won't have this project's
 REM dependencies\ folder at all.
 echo Checking ffmpeg (uses dependencies\ffmpeg\ as-is if it's already current)...
-python "%~dp0fetch_ffmpeg.py" --cache "%DEPS%\ffmpeg" --target "%DEPS%\ffmpeg"
+python "%~dp0tools\fetch_ffmpeg.py" --cache "%DEPS%\ffmpeg" --target "%DEPS%\ffmpeg"
 if errorlevel 1 (
     echo Warning: could not fetch ffmpeg automatically. Downloads that need
     echo          audio extraction/conversion will fail until dependencies\ffmpeg\ffmpeg.exe
@@ -126,7 +143,7 @@ if errorlevel 1 (
 )
 
 echo Checking aria2c (optional speed-up for downloads; uses dependencies\aria2\ as-is if already current)...
-python "%~dp0fetch_aria2.py" --cache "%DEPS%\aria2" --target "%DEPS%\aria2"
+python "%~dp0tools\fetch_aria2.py" --cache "%DEPS%\aria2" --target "%DEPS%\aria2"
 if errorlevel 1 (
     echo Warning: could not fetch aria2c automatically. Downloads will still
     echo          work, just with a single connection instead of 16 parallel
@@ -138,9 +155,9 @@ set VLC_DIR=
 if exist "%ProgramFiles%\VideoLAN\VLC\libvlc.dll" set VLC_DIR=%ProgramFiles%\VideoLAN\VLC
 if exist "%ProgramFiles(x86)%\VideoLAN\VLC\libvlc.dll" set VLC_DIR=%ProgramFiles(x86)%\VideoLAN\VLC
 if defined VLC_DIR (
-    python "%~dp0sync_vlc.py" --source "%VLC_DIR%" --cache "%DEPS%\vlc" --dest "%DEPS%\vlc"
+    python "%~dp0tools\sync_vlc.py" --source "%VLC_DIR%" --cache "%DEPS%\vlc" --dest "%DEPS%\vlc"
 ) else (
-    python "%~dp0sync_vlc.py" --cache "%DEPS%\vlc" --dest "%DEPS%\vlc"
+    python "%~dp0tools\sync_vlc.py" --cache "%DEPS%\vlc" --dest "%DEPS%\vlc"
 )
 if errorlevel 1 (
     echo Warning: could not fetch the VLC engine automatically, no VLC install

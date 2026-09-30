@@ -28,6 +28,8 @@ Exit codes:
 import argparse
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -38,6 +40,34 @@ import urllib.request
 # install below can hang forever with no output at all.
 socket.setdefaulttimeout(30)
 PIP_TIMEOUT_SECONDS = 600
+
+
+def version_key(version):
+    """Numeric sort key for a yt-dlp version string. yt-dlp's own module
+    reports '2026.09.27.232945' while PyPI lists the same build as
+    '2026.9.27.232945.dev0', so plain string comparison says they differ
+    (forcing a reinstall on every run) and plain string sorting puts
+    '2026.10...' before '2026.9...'. Comparing the leading numbers fixes
+    both; a trailing '.dev0' or 'dev' tag is ignored."""
+    m = re.match(r"\s*(\d+(?:\.\d+)*)", version or "")
+    if not m:
+        return ()
+    return tuple(int(part) for part in m.group(1).split("."))
+
+
+def remove_stale_dist_info(target_dir):
+    """pip --target -U leaves the previous yt_dlp-<version>.dist-info folder
+    behind. Keeps only the newest one."""
+    if not target_dir or not os.path.isdir(target_dir):
+        return
+    infos = [n for n in os.listdir(target_dir)
+             if n.lower().startswith("yt_dlp-") and n.lower().endswith(".dist-info")]
+    if len(infos) < 2:
+        return
+    infos.sort(key=lambda n: version_key(n[len("yt_dlp-"):-len(".dist-info")]))
+    for stale in infos[:-1]:
+        shutil.rmtree(os.path.join(target_dir, stale), ignore_errors=True)
+        print(f"Removed stale metadata folder {stale}.")
 
 
 def get_installed_version(target_dir):
@@ -64,9 +94,8 @@ def get_installed_version(target_dir):
 
 def get_latest_available_version():
     """Newest version string PyPI has for yt-dlp, pre-releases
-    included. yt-dlp's own version strings (YYYY.MM.DD[.REV]) sort
-    correctly as plain strings, so a plain max() over all published
-    versions gives the same answer pip's --pre -U resolver would."""
+    included, chosen by numeric comparison (see version_key), which gives
+    the same answer pip's --pre -U resolver would."""
     url = "https://pypi.org/pypi/yt-dlp/json"
     with urllib.request.urlopen(url, timeout=15) as resp:
         data = json.load(resp)
@@ -75,7 +104,7 @@ def get_latest_available_version():
               if files and not all(f.get("yanked", False) for f in files)]
     if not usable:
         return None
-    return max(usable)
+    return max(usable, key=version_key)
 
 
 def install(target_dir):
@@ -118,8 +147,9 @@ def main():
         print("yt-dlp is not installed and it could not be downloaded either.")
         return 1
 
-    if latest and installed == latest:
+    if latest and installed and version_key(installed) >= version_key(latest):
         print(f"yt-dlp {installed} is already the latest nightly -- using the cached copy, nothing to download.")
+        remove_stale_dist_info(args.target)
         return 0
 
     if latest:
@@ -128,6 +158,8 @@ def main():
         print("Could not determine the latest available version; installing/upgrading yt-dlp anyway...")
 
     rc = install(args.target)
+    if rc == 0:
+        remove_stale_dist_info(args.target)
     if rc != 0 and not installed:
         return 1
     return 0
